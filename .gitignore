@@ -1,0 +1,10 @@
+# Archivos de credenciales y entorno
+.env
+venv/
+__pycache__/
+Test_Variables.py
+
+# Archivos pesados originales y de salida local
+creditcard.csv
+models/
+logs/
