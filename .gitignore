@@ -6,5 +6,8 @@ Test_Variables.py
 
 # Archivos pesados originales y de salida local
 creditcard.csv
-models/
 logs/
+
+# Ignorar la carpeta models EXCEPTO el modelo vigente
+models/*
+!models/modelo_vigente.pkl

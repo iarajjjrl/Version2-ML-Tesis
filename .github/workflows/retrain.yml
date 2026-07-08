@@ -4,6 +4,10 @@ on:
   repository_dispatch:
     types: [data_drift_detected]
 
+# Otorga permisos al bot de GitHub para hacer commit y push sobre el repositorio
+permissions:
+  contents: write
+
 jobs:
   ephemeral_retraining:
     runs-on: ubuntu-latest
@@ -11,6 +15,8 @@ jobs:
     steps:
     - name: Checkout del Codigo
       uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Configurar Entorno Python
       uses: actions/setup-python@v5
@@ -25,6 +31,13 @@ jobs:
     - name: Ejecutar Autoajuste Bayesiano y Guardrails (Optuna)
       run: |
         python src/auto_tune.py
+
+    - name: Publicar Modelo Actualizado al Repositorio (Auto-Commit)
+      if: success()
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: "robot: [MLOps Auto-Retrain] Modelo actualizado tras deteccion de Data Drift"
+        file_pattern: "models/modelo_vigente.pkl"
 
     - name: Registrar Artefacto Optimizado
       if: success()
