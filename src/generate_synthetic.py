@@ -33,16 +33,16 @@ def generar_lote_sintetico(ruta_base_csv, num_muestras=5000, proporcion_fraude=0
     df_sint_frd = pd.DataFrame(sintetico_frd, columns=df_fraudes.columns)
     df_sint_frd['Class'] = 1
     
-    # Concatenar lote sintético
+    # 3. Concatenar lote sintético unificado
     df_sintetico = pd.concat([df_sint_leg, df_sint_frd]).sample(frac=1.0, random_state=42).reset_index(drop=True)
     
-    # 3. Inyección Opcional de Data Drift (Simulación de un patrón de fraude evasivo o cambio de mercado)
+    # 4. Inyección Opcional de Data Drift en variables reales de IEEE-CIS
     if inyectar_drift:
-        print("[SINTETICO] ⚠️ Inyectando Data Drift en variables criticas (V14, V10, V12, scaled_amount)...")
-        # Alteramos patrones que desestabilizan las fronteras de decision del modelo
-        df_sintetico['V14'] = df_sintetico['V14'] * np.random.uniform(2.0, 3.5, size=len(df_sintetico))
-        df_sintetico['V10'] = df_sintetico['V10'] - np.random.uniform(1.5, 3.0, size=len(df_sintetico))
-        df_sintetico['scaled_amount'] = df_sintetico['scaled_amount'] * np.random.uniform(3.0, 5.0, size=len(df_sintetico))
+        print("[SINTETICO] ⚠️ Inyectando Data Drift en variables criticas (TransactionAmt, card1, C1, C13)...")
+        df_sintetico['TransactionAmt'] = df_sintetico['TransactionAmt'] * np.random.uniform(2.5, 4.0, size=len(df_sintetico))
+        df_sintetico['card1'] = df_sintetico['card1'] * np.random.uniform(1.5, 3.0, size=len(df_sintetico))
+        df_sintetico['C1'] = df_sintetico['C1'] * np.random.uniform(2.0, 3.5, size=len(df_sintetico))
+        df_sintetico['C13'] = df_sintetico['C13'] * np.random.uniform(2.0, 3.5, size=len(df_sintetico))
         
     os.makedirs("data", exist_ok=True)
     ruta_salida = "data/lote_sintetico_actual.csv"
@@ -52,5 +52,4 @@ def generar_lote_sintetico(ruta_base_csv, num_muestras=5000, proporcion_fraude=0
     return ruta_salida
 
 if __name__ == "__main__":
-    # Prueba individual: Generar lote normal y lote con drift
     generar_lote_sintetico("data/datos_entrenamiento.csv", num_muestras=3000, inyectar_drift=False)

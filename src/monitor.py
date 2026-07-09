@@ -53,7 +53,7 @@ def disparar_reentrenamiento_github():
     response = requests.post(url, json=data, headers=headers)
     return response.status_code in [200, 204]
 
-def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pkl", umbral_f1=0.75):
+def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pkl", umbral_f1=0.50):
     """
     Evalúa el rendimiento del modelo sobre un lote de transacciones, 
     registra el tiempo de detección (TTD) y dispara alertas si hay Data Drift.

@@ -11,3 +11,7 @@ logs/
 # Ignorar la carpeta models EXCEPTO el modelo vigente
 models/*
 !models/modelo_vigente.pkl
+
+train_identity.csv
+
+train_transaction.csv
