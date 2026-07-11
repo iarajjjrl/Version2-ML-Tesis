@@ -13,8 +13,30 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.monitor import ModelWithThreshold
 
-# Desactivar avisos verbosos de Optuna
 optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+def cargar_datos_entrenamiento_consolidados(ruta_base="data/datos_entrenamiento.csv"):
+    if not os.path.exists(ruta_base):
+        raise FileNotFoundError(f"No se encontró el archivo de entrenamiento en '{ruta_base}'")
+        
+    df_base = pd.read_csv(ruta_base)
+    
+    # FEEDBACK LOOP: Incorporar lotes de produccion adicionales si existen
+    lotes_drift = ["data/prod_lote2_drift.csv"]
+    lotes_incorporados = []
+    
+    for ruta in lotes_drift:
+        if os.path.exists(ruta):
+            df_drift = pd.read_csv(ruta)
+            df_base = pd.concat([df_base, df_drift], ignore_index=True)
+            lotes_incorporados.append(ruta)
+            
+    if lotes_incorporados:
+        print(f"[FEEDBACK LOOP MLOPS] Incorporando {len(lotes_incorporados)} lote(s) real(es) de drift al reentrenamiento.")
+        # Guardar dataset consolidado actualizado
+        df_base.to_csv(ruta_base, index=False)
+        
+    return df_base
 
 def encontrar_umbral_optimo(modelo, X_val, y_val):
     probs = modelo.predict_proba(X_val)[:, 1]
@@ -31,15 +53,12 @@ def encontrar_umbral_optimo(modelo, X_val, y_val):
             
     return mejor_f1, mejor_umbral
 
-def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv", umbral_guardrail=0.50, n_trials=10):
+def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv", umbral_guardrail=0.50, n_trials=5):
     print("="*60)
-    print("  AUTOTUNE MLOPS: BÚSQUEDA BAYESIANA CON OPTUNA (BOOSTING)")
+    print("  AUTOTUNE MLOPS: BÚSQUEDA BAYESIANA ÁGIL (FEEDBACK LOOP)")
     print("="*60)
     
-    if not os.path.exists(ruta_train):
-        raise FileNotFoundError(f"No se encontró el archivo de entrenamiento en '{ruta_train}'")
-        
-    df = pd.read_csv(ruta_train)
+    df = cargar_datos_entrenamiento_consolidados(ruta_train)
     X = df.drop(columns=['Class'])
     y = df['Class']
     
@@ -48,19 +67,18 @@ def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv"
     )
 
     # ---------------------------------------------------------
-    # OPTUNA TRIAL 1: HistGradientBoosting (LightGBM Core)
+    # OPTUNA TRIAL 1: HistGradientBoosting
     # ---------------------------------------------------------
     print(f"\n[OPTUNA 1/2] Optimizando HistGradientBoosting ({n_trials} trials)...")
     
     def objective_hgb(trial):
-        lr = trial.suggest_float("learning_rate", 0.02, 0.2, log=True)
-        max_iter = trial.suggest_int("max_iter", 150, 400)
-        max_depth = trial.suggest_int("max_depth", 6, 18)
-        l2 = trial.suggest_float("l2_regularization", 1e-3, 10.0, log=True)
+        lr = trial.suggest_float("learning_rate", 0.03, 0.15, log=True)
+        max_iter = trial.suggest_int("max_iter", 100, 250)
+        max_depth = trial.suggest_int("max_depth", 6, 14)
         
         model = HistGradientBoostingClassifier(
             learning_rate=lr, max_iter=max_iter, max_depth=max_depth,
-            l2_regularization=l2, class_weight='balanced', random_state=42
+            class_weight='balanced', random_state=42
         )
         model.fit(X_train, y_train)
         f1, _ = encontrar_umbral_optimo(model, X_val, y_val)
@@ -76,17 +94,16 @@ def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv"
     print(f"  -> Mejor F1-Score HistGradientBoosting: {f1_hgb:.4f} (Umbral: {th_hgb:.2f})")
 
     # ---------------------------------------------------------
-    # OPTUNA TRIAL 2: RandomForest (Ensemble Bagging)
+    # OPTUNA TRIAL 2: RandomForest
     # ---------------------------------------------------------
     print(f"\n[OPTUNA 2/2] Optimizando RandomForest ({n_trials} trials)...")
     
     def objective_rf(trial):
-        n_est = trial.suggest_int("n_estimators", 100, 250)
-        max_depth = trial.suggest_int("max_depth", 10, 25)
-        min_samples_split = trial.suggest_int("min_samples_split", 2, 10)
+        n_est = trial.suggest_int("n_estimators", 60, 120)
+        max_depth = trial.suggest_int("max_depth", 8, 15)
         
         model = RandomForestClassifier(
-            n_estimators=n_est, max_depth=max_depth, min_samples_split=min_samples_split,
+            n_estimators=n_est, max_depth=max_depth,
             class_weight='balanced_subsample', n_jobs=-1, random_state=42
         )
         model.fit(X_train, y_train)
@@ -114,7 +131,7 @@ def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv"
     nombre_ganador, modelo_ganador, f1_ganador, th_ganador = modelos[0]
     
     print("\n" + "="*60)
-    print("  TABLA COMPARATIVA DE RENDIMIENTO (OPTIMIZADO CON OPTUNA)")
+    print("  TABLA COMPARATIVA DE RENDIMIENTO (FEEDBACK LOOP)")
     print("="*60)
     for nombre, _, f1_val, th_val in modelos:
         marca = "🏆 GANADOR" if nombre == nombre_ganador else "  "

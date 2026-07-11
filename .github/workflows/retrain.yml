@@ -40,8 +40,8 @@ jobs:
       if: success()
       uses: stefanzweifel/git-auto-commit-action@v5
       with:
-        commit_message: "robot: [MLOps Auto-Retrain] Modelo actualizado tras deteccion de Data Drift [skip ci]"
-        file_pattern: "models/modelo_vigente.pkl"
+        commit_message: "robot: [MLOps Auto-Retrain] Modelo y dataset consolidados tras deteccion de Data Drift [skip ci]"
+        file_pattern: "models/modelo_vigente.pkl data/datos_entrenamiento.csv"
         commit_user_name: "Bot MLOps"
         commit_user_email: "mlops-bot@github.com"
         add_options: '-f'
