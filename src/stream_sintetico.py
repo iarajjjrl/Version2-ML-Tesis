@@ -1,9 +1,14 @@
 import os
+import sys
 import time
 import requests
 import subprocess
 import pandas as pd
 from dotenv import load_dotenv
+
+# 🔹 CLAVE: Asegurar la ruta raíz del proyecto ANTES de importar módulos de src/
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from src.generate_synthetic import generar_lote_sintetico
 from src.monitor import evaluar_lote_produccion, obtener_huella_modelo
 
