@@ -8,7 +8,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 
-# Asegurar la ruta raíz del proyecto
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.monitor import ModelWithThreshold
@@ -21,7 +20,7 @@ def cargar_datos_entrenamiento_consolidados(ruta_base="data/datos_entrenamiento.
         
     df_base = pd.read_csv(ruta_base)
     
-    # FEEDBACK LOOP: Incorporar lotes de produccion adicionales si existen
+    # Feedback Loop: Anexar lote de drift si existe en la carpeta de producción
     lotes_drift = ["data/prod_lote2_drift.csv"]
     lotes_incorporados = []
     
@@ -33,7 +32,6 @@ def cargar_datos_entrenamiento_consolidados(ruta_base="data/datos_entrenamiento.
             
     if lotes_incorporados:
         print(f"[FEEDBACK LOOP MLOPS] Incorporando {len(lotes_incorporados)} lote(s) real(es) de drift al reentrenamiento.")
-        # Guardar dataset consolidado actualizado
         df_base.to_csv(ruta_base, index=False)
         
     return df_base
@@ -123,8 +121,8 @@ def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv"
     # COMPARATIVA Y SELECCIÓN DEL MODELO GANADOR
     # ---------------------------------------------------------
     modelos = [
-        ("HistGradientBoosting (Optuna)", best_hgb, f1_hgb, th_hgb),
-        ("RandomForest (Optuna)", best_rf, f1_rf, th_rf)
+        ("HistGradientBoosting", best_hgb, f1_hgb, th_hgb),
+        ("RandomForest", best_rf, f1_rf, th_rf)
     ]
     
     modelos.sort(key=lambda x: x[2], reverse=True)
@@ -146,7 +144,11 @@ def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv"
         print(f"[GUARDRAIL APROBADO] ✅ El modelo '{nombre_ganador}' alcanzó un F1-Score de {f1_ganador:.4f}.")
         
         modelo_ganador.fit(X, y)
-        artefacto_final = ModelWithThreshold(base_model=modelo_ganador, threshold=th_ganador)
+        artefacto_final = ModelWithThreshold(
+            base_model=modelo_ganador, 
+            threshold=th_ganador, 
+            name=nombre_ganador
+        )
         
         os.makedirs("models", exist_ok=True)
         ruta_modelo = "models/modelo_vigente.pkl"

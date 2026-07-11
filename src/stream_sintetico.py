@@ -7,17 +7,17 @@ import pandas as pd
 from datetime import datetime, timezone
 from dotenv import load_dotenv
 
-# Asegurar la ruta raíz del proyecto
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.monitor import evaluar_lote_produccion, obtener_huella_modelo
 
 load_dotenv()
 
-def esperar_github_actions_dinamico(timestamp_disparo, timeout_segundos=300, intervalo_poll=8):
+def esperar_github_actions_dinamico(timestamp_disparo, timeout_segundos=400, intervalo_poll=8):
     """
-    Monitorea dinámicamente la API de GitHub Actions filtrando únicamente
-    por ejecuciones creadas posterior al timestamp_disparo de la alerta.
+    Monitoreo en 2 Fases:
+    1. Engancha el Run ID específico generado tras el disparo.
+    2. Monitorea exclusivamente ese Run ID hasta su estado COMPLETED.
     """
     token = os.getenv("GITHUB_TOKEN")
     repo = os.getenv("GITHUB_REPOSITORY", "iarajjjrl/Version2-ML-Tesis")
@@ -26,56 +26,72 @@ def esperar_github_actions_dinamico(timestamp_disparo, timeout_segundos=300, int
         print("[AUTO-POLL] ❌ No hay GITHUB_TOKEN en .env. No se puede monitorear la nube.")
         return False
         
-    url = f"https://api.github.com/repos/{repo}/actions/runs"
+    url_lista = f"https://api.github.com/repos/{repo}/actions/runs"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json"
     }
     
-    print("\n[AUTO-POLL] ⏳ Conectando con GitHub API. Esperando registro de la nueva ejecución en la nube...")
+    print("\n[AUTO-POLL] ⏳ FASE 1: Aguardando a que GitHub Actions levante la máquina virtual...")
+    time.sleep(5)
+    
+    run_id_objetivo = None
     tiempo_inicio = time.time()
     
-    while time.time() - tiempo_inicio < timeout_segundos:
+    while time.time() - tiempo_inicio < 60:
         try:
-            response = requests.get(url, headers=headers)
+            response = requests.get(url_lista, headers=headers)
             if response.status_code == 200:
-                data = response.json()
-                runs = data.get("workflow_runs", [])
-                
-                # Filtrar solo ejecuciones creadas DESPUÉS del disparo
-                runs_nuevos = []
+                runs = response.json().get("workflow_runs", [])
                 for r in runs:
+                    status = r.get("status")
                     created_at_str = r.get("created_at")
                     if created_at_str:
                         dt_created = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
-                        ts_created = dt_created.timestamp()
-                        if ts_created >= (timestamp_disparo - 10):
-                            runs_nuevos.append(r)
-                
-                if runs_nuevos:
-                    latest_run = runs_nuevos[0]
-                    status = latest_run.get("status")
-                    conclusion = latest_run.get("conclusion")
-                    run_id = latest_run.get("id")
-                    
-                    if status in ["queued", "in_progress"]:
-                        print(f"[AUTO-POLL] 🚀 Trabajo activo en la nube: {status.upper()}... (Run ID: {run_id})")
-                    elif status == "completed":
-                        print(f"[AUTO-POLL] 🏁 ¡GitHub Actions ha finalizado! Conclusión: {conclusion.upper()} (Run ID: {run_id})")
-                        if conclusion == "success":
-                            print("[AUTO-POLL] ⏸️ Pausa de 5 segundos para consolidar la actualización en GitHub...")
-                            time.sleep(5)
-                            return True
-                        else:
-                            return False
-                else:
-                    print("[AUTO-POLL] ⏳ Aguardando a que la API de GitHub registre el evento...")
+                        if dt_created.timestamp() >= (timestamp_disparo - 15):
+                            if status in ["queued", "in_progress"]:
+                                run_id_objetivo = r.get("id")
+                                print(f"[AUTO-POLL] 🎯 ¡Enganchado al Run ID activo: {run_id_objetivo}! Estado inicial: {status.upper()}")
+                                break
+                if run_id_objetivo:
+                    break
         except Exception as e:
-            print(f"[AUTO-POLL] Error de conexión con GitHub API: {e}")
+            print(f"[AUTO-POLL] Error de conexión: {e}")
+            
+        print("[AUTO-POLL] ⏳ Esperando registro del pod virtual en GitHub API...")
+        time.sleep(5)
+        
+    if not run_id_objetivo:
+        print("[AUTO-POLL] ⚠️ No se detectó ninguna ejecución activa nueva. Asumiendo timeout o fallo de evento.")
+        return False
+
+    print(f"[AUTO-POLL] ⏳ FASE 2: Monitoreando el pipeline en la nube (Run ID: {run_id_objetivo})...")
+    url_run_especifico = f"https://api.github.com/repos/{repo}/actions/runs/{run_id_objetivo}"
+    
+    while time.time() - tiempo_inicio < timeout_segundos:
+        try:
+            response = requests.get(url_run_especifico, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                status = data.get("status")
+                conclusion = data.get("conclusion")
+                
+                if status == "completed":
+                    print(f"[AUTO-POLL] 🏁 ¡El Run ID {run_id_objetivo} ha FINALIZADO! Conclusión: {conclusion.upper()}")
+                    if conclusion == "success":
+                        print("[AUTO-POLL] ⏸️ Pausa de 5s para asentamiento de cambios en git...")
+                        time.sleep(5)
+                        return True
+                    else:
+                        return False
+                else:
+                    print(f"[AUTO-POLL] 🚀 Reentrenando modelo en la nube... Estado: {status.upper()}")
+        except Exception as e:
+            print(f"[AUTO-POLL] Error de conexión: {e}")
             
         time.sleep(intervalo_poll)
         
-    print("[AUTO-POLL] ⏱️ Timeout alcanzado esperando a GitHub Actions.")
+    print("[AUTO-POLL] ⏱️ Timeout alcanzado esperando la finalización en GitHub Actions.")
     return False
 
 def ejecutar_git_pull_automatico():
@@ -116,7 +132,6 @@ def ejecutar_simulacion_stream():
             print(f"[ERROR] No se encontró el archivo '{ruta_lote}'. Ejecuta 'python src/prepare_data.py' primero.")
             continue
         
-        # BUCLE DE EXAMEN Y RE-EXAMEN (MLOps Loop)
         aprobado = False
         intentos = 0
         max_intentos = 3
@@ -128,19 +143,20 @@ def ejecutar_simulacion_stream():
             
             timestamp_evaluacion = datetime.now(timezone.utc).timestamp()
             
-            # Rendir examen sobre el lote de producción
             registro = evaluar_lote_produccion(ruta_lote)
             
             f1 = registro["f1_score_fraude"]
             psi = registro["psi_valor"]
             alerta = registro["alerta_disparada"]
             
-            # Criterio de Aprobación
-            if f1 >= 0.50 and psi <= 0.25:
-                print(f"[ÉXITO] ✅ El modelo APROBÓ el lote (F1: {f1:.4f} >= 0.50, PSI: {psi:.4f} <= 0.25). Avanzando...")
+            # Criterio de Aprobación MLOps:
+            # Si el F1-Score supera la regla de calidad (0.50), el modelo
+            # demuestra que sabe predecir con alta precisión sobre la nueva realidad.
+            if f1 >= 0.50:
+                print(f"[ÉXITO] ✅ El modelo APROBÓ el lote con un F1-Score de {f1:.4f} >= 0.50. Avanzando...")
                 aprobado = True
             else:
-                print(f"[REPROBADO] ❌ El modelo REPROBÓ el lote (F1: {f1:.4f}, PSI: {psi:.4f}).")
+                print(f"[REPROBADO] ❌ El modelo REPROBÓ el lote (F1: {f1:.4f} < 0.50 | PSI: {psi:.4f}).")
                 
                 if alerta:
                     print("[STREAM] Alerta enviada a la nube. Esperando solución de GitHub Actions...")

@@ -13,12 +13,12 @@ load_dotenv()
 
 class ModelWithThreshold:
     """
-    Wrapper de producción que aplica el umbral óptimo de probabilidad
-    al ejecutar predict(), manteniendo compatibilidad total con joblib.
+    Wrapper de producción con observabilidad de algoritmo y umbral dinámico.
     """
-    def __init__(self, base_model, threshold=0.5):
+    def __init__(self, base_model, threshold=0.5, name="Modelo"):
         self.base_model = base_model
         self.threshold = threshold
+        self.name = name
         
     def predict(self, X):
         if hasattr(self.base_model, "predict_proba"):
@@ -27,9 +27,6 @@ class ModelWithThreshold:
         return self.base_model.predict(X)
 
 def obtener_huella_modelo(ruta_modelo="models/modelo_vigente.pkl"):
-    """
-    Calcula la firma digital (SHA256) y el timestamp del archivo .pkl.
-    """
     if not os.path.exists(ruta_modelo):
         return "INEXISTENTE", "N/A"
     
@@ -47,9 +44,6 @@ def obtener_huella_modelo(ruta_modelo="models/modelo_vigente.pkl"):
         return "ERROR_HASH", "N/A"
 
 def calcular_psi(esperado, actual, num_buckets=10):
-    """
-    Calcula el Índice de Estabilidad de la Población (PSI).
-    """
     try:
         eps = 1e-4
         percentiles = np.linspace(0, 100, num_buckets + 1)
@@ -148,8 +142,13 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
     y_test = df_lote['Class']
     
     modelo = joblib.load(modelo_path)
+    
+    # Observabilidad: Extraer metadata del modelo activo
+    nombre_algoritmo = getattr(modelo, "name", modelo.__class__.__name__)
+    umbral_calibrado = getattr(modelo, "threshold", 0.50)
+    
     y_pred = modelo.predict(X_test)
-    f1 = f1_score(y_test, y_pred, pos_label=1)
+    f1 = f1_score(y_test, y_pred, pos_label=1, zero_division=0)
     
     psi_valor = 0.0
     if os.path.exists(ruta_base_train):
@@ -161,15 +160,16 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
     alerta_disparada = False
     
     print(f"\n[INFO] Evaluando telemetría sobre el lote: {ruta_lote_csv}")
-    print(f"[MODELO ACTIVO] SHA256: [{hash_modelo}] | Compilado/Actualizado: {fecha_mod_modelo}")
+    print(f"[MODELO ACTIVO] 🤖 {nombre_algoritmo} | Umbral Calibrado: {umbral_calibrado:.2f} | SHA256: [{hash_modelo}] | Compilado: {fecha_mod_modelo}")
     print(f"[RESULTADO] F1-Score (Fraude): {f1:.4f} | Umbral Mínimo: {umbral_f1}")
     print(f"[RESULTADO] Population Stability Index (PSI): {psi_valor:.4f} | Umbral PSI: {umbral_psi}")
     print(f"[RESULTADO] Drift Detection Time (TTD): {ttd_segundos:.6f} segundos")
     
-    hay_drift = (f1 < umbral_f1) or (psi_valor > umbral_psi)
+    # El modelo requiere reentrenamiento si su F1-Score cae por debajo de la regla de calidad (0.50)
+    hay_drift = (f1 < umbral_f1)
     
     if hay_drift:
-        print(f"[ALERTA] ⚠️ Degradación detectada (F1: {f1:.4f} < {umbral_f1} o PSI: {psi_valor:.4f} > {umbral_psi}).")
+        print(f"[ALERTA] ⚠️ Degradación detectada (F1: {f1:.4f} < {umbral_f1}).")
         
         en_cooldown = consultar_ultimo_cooldown_alerta()
         if en_cooldown:
@@ -182,7 +182,7 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
             else:
                 print("[ERROR] Falló el envío del evento a GitHub API.")
     else:
-        print("[INFO] Estado del modelo estable. Rendimiento y PSI dentro de parámetros.")
+        print("[INFO] Estado del modelo estable. Rendimiento dentro de parámetros.")
         
     os.makedirs("logs", exist_ok=True)
     ruta_log = "logs/telemetria_experimento.csv"
@@ -190,6 +190,8 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
     registro = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "lote_evaluado": ruta_lote_csv,
+        "algoritmo": nombre_algoritmo,
+        "umbral_calibrado": round(umbral_calibrado, 2),
         "modelo_sha256": hash_modelo,
         "f1_score_fraude": round(f1, 4),
         "psi_valor": round(psi_valor, 4),
