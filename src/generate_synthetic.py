@@ -11,8 +11,8 @@ def generar_lote_sintetico(
     factor_drift=3.0
 ):
     """
-    Genera un lote de transacciones sintéticas basadas en la distribución estadística multivariable del dataset real.
-    Soporta argumentos nombrados dinámicos desde stream_sintetico.py.
+    Genera transacciones sintéticas aplicando Muestreo Gaussiano Multivariable
+    y saneando los tipos de datos para preservar el esquema entero/categórico de IEEE-CIS.
     """
     print(f"[SINTETICO] Cargando datos base para modelar distribución desde '{ruta_base_csv}'...")
     if not os.path.exists(ruta_base_csv):
@@ -40,20 +40,33 @@ def generar_lote_sintetico(
     df_sint_frd = pd.DataFrame(sintetico_frd, columns=df_fraudes.columns)
     df_sint_frd['Class'] = 1
     
-    # 3. Concatenar lote sintético unificado y reordenar aleatoriamente
+    # 3. Concatenar y reordenar aleatoriamente
     df_sintetico = pd.concat([df_sint_leg, df_sint_frd]).sample(frac=1.0, random_state=42).reset_index(drop=True)
     
-    # 4. Inyección Opcional de Data Drift en variables reales de IEEE-CIS
+    # 4. SANEAMIENTO DE TIPOS DE DATOS (Alineación con esquema IEEE-CIS)
+    cols_enteras = ['card1', 'card2', 'card4', 'card6', 'ProductCD', 'addr1', 'addr2', 
+                    'dist1', 'C1', 'C2', 'C5', 'C6', 'C11', 'C13', 'D1', 'D4', 'DeviceType']
+    
+    for col in cols_enteras:
+        if col in df_sintetico.columns:
+            # Redondear y truncar a valores enteros no negativos
+            df_sintetico[col] = np.clip(np.round(df_sintetico[col]), a_min=0, a_max=None).astype(int)
+            
+    if 'TransactionAmt' in df_sintetico.columns:
+        # Asegurar que el monto de la transacción sea estrictamente mayor o igual a 0.01
+        df_sintetico['TransactionAmt'] = np.clip(df_sintetico['TransactionAmt'], a_min=0.01, a_max=None)
+    
+    # 5. Inyección Opcional de Data Drift en variables de negocio
     if inyectar_drift:
         print(f"[SINTETICO] ⚠️ Inyectando Data Drift (factor {factor_drift}) en variables críticas (TransactionAmt, card1, C1, C13)...")
         df_sintetico['TransactionAmt'] = df_sintetico['TransactionAmt'] * np.random.uniform(2.5, 4.0, size=len(df_sintetico))
-        df_sintetico['card1'] = df_sintetico['card1'] * np.random.uniform(1.5, 3.0, size=len(df_sintetico))
-        df_sintetico['C1'] = df_sintetico['C1'] * np.random.uniform(2.0, 3.5, size=len(df_sintetico))
-        df_sintetico['C13'] = df_sintetico['C13'] * np.random.uniform(2.0, 3.5, size=len(df_sintetico))
+        df_sintetico['card1'] = (df_sintetico['card1'] * np.random.uniform(1.5, 3.0, size=len(df_sintetico))).astype(int)
+        df_sintetico['C1'] = (df_sintetico['C1'] * np.random.uniform(2.0, 3.5, size=len(df_sintetico))).astype(int)
+        df_sintetico['C3'] = (df_sintetico['C13'] * np.random.uniform(2.0, 3.5, size=len(df_sintetico))).astype(int)
         
     os.makedirs(os.path.dirname(ruta_salida) or ".", exist_ok=True)
     df_sintetico.to_csv(ruta_salida, index=False)
-    print(f"[SINTETICO] Lote sintético generado exitosamente en '{ruta_salida}' ({len(df_sintetico)} filas).\n")
+    print(f"[SINTETICO] Lote sintético saneado generado en '{ruta_salida}' ({len(df_sintetico)} filas).\n")
     return ruta_salida
 
 if __name__ == "__main__":

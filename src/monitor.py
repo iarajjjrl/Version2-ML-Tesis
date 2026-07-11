@@ -13,8 +13,7 @@ load_dotenv()
 
 def obtener_huella_modelo(ruta_modelo="models/modelo_vigente.pkl"):
     """
-    Calcula la firma digital (SHA256) y el timestamp de modificación del binario .pkl.
-    Permite demostrar dinámicamente qué versión exacta del modelo está cargada en memoria.
+    Calcula la firma digital (SHA256) y el timestamp del archivo .pkl.
     """
     if not os.path.exists(ruta_modelo):
         return "INEXISTENTE", "N/A"
@@ -23,24 +22,21 @@ def obtener_huella_modelo(ruta_modelo="models/modelo_vigente.pkl"):
         hasher = hashlib.sha256()
         with open(ruta_modelo, 'rb') as f:
             hasher.update(f.read())
-        hash_sha256 = hasher.hexdigest()[:12]  # Primeros 12 caracteres del Hash
+        hash_sha256 = hasher.hexdigest()[:12]
         
         mtime = os.path.getmtime(ruta_modelo)
         fecha_mod = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
         
         return hash_sha256, fecha_mod
-    except Exception as e:
+    except Exception:
         return "ERROR_HASH", "N/A"
 
 def calcular_psi(esperado, actual, num_buckets=10):
     """
-    Calcula el Índice de Estabilidad de la Población (PSI) entre la 
-    distribución base de entrenamiento y la distribución actual de inferencia.
-    (Metodología 4.3 & Marco Teórico 3.4)
+    Calcula el Índice de Estabilidad de la Población (PSI).
     """
     try:
-        eps = 1e-4  # Evitar ceros en la operación logarítmica
-        
+        eps = 1e-4
         percentiles = np.linspace(0, 100, num_buckets + 1)
         buckets = np.percentile(esperado, percentiles)
         buckets[0] = -np.inf
@@ -62,15 +58,18 @@ def calcular_psi(esperado, actual, num_buckets=10):
 
 def consultar_ultimo_cooldown_alerta(ruta_log="logs/telemetria_experimento.csv", cooldown_segundos=180):
     """
-    Mecanismo FinOps de exclusión temporal (Cooldown).
-    Bloquea disparos duplicados a GitHub Actions si se envió una alerta previa en < 180s.
+    Bloqueo FinOps de exclusión temporal (Cooldown).
     """
     if not os.path.exists(ruta_log):
         return False
         
     try:
         df_log = pd.read_csv(ruta_log)
-        alertas = df_log[df_log['alerta_disparada'] == True]
+        if df_log.empty or 'alerta_disparada' not in df_log.columns:
+            return False
+            
+        # Parseo robusto para tipos de datos booleanos o texto en CSV
+        alertas = df_log[df_log['alerta_disparada'].astype(str).str.lower().isin(['true', '1'])]
         if alertas.empty:
             return False
             
@@ -83,14 +82,44 @@ def consultar_ultimo_cooldown_alerta(ruta_log="logs/telemetria_experimento.csv",
         pass
     return False
 
-def disparar_reentrenamiento_github():
+def hay_reentrenamiento_activo_en_nube():
     """
-    Envía un Webhook asíncrono POST (repository_dispatch) hacia la API REST de GitHub.
+    Consulta si GitHub Actions ya tiene una máquina ejecutando o en cola.
+    Evita disparar eventos duplicados a la API.
     """
     token = os.getenv("GITHUB_TOKEN")
     repo = os.getenv("GITHUB_REPOSITORY", "iarajjjrl/Version2-ML-Tesis")
     if not token:
-        print("[ERROR] No se encontró GITHUB_TOKEN en el archivo .env.")
+        return False
+        
+    url = f"https://api.github.com/repos/{repo}/actions/runs"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    try:
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            runs = response.json().get("workflow_runs", [])
+            for run in runs:
+                if run.get("status") in ["queued", "in_progress"]:
+                    return True
+    except Exception:
+        pass
+    return False
+
+def disparar_reentrenamiento_github():
+    """
+    Envía la petición Webhook a GitHub Actions si no hay ejecuciones activas.
+    """
+    if hay_reentrenamiento_activo_en_nube():
+        print("[NUBE OCUPADA] ⏳ GitHub Actions ya tiene una ejecución activa. Omitiendo disparo duplicado.")
+        return True  # Devuelve True para que el orquestador espere la ejecución existente
+
+    token = os.getenv("GITHUB_TOKEN")
+    repo = os.getenv("GITHUB_REPOSITORY", "iarajjjrl/Version2-ML-Tesis")
+    if not token:
+        print("[ERROR] No se encontró GITHUB_TOKEN en .env.")
         return False
         
     url = f"https://api.github.com/repos/{repo}/dispatches"
@@ -103,27 +132,21 @@ def disparar_reentrenamiento_github():
     return response.status_code in [200, 204]
 
 def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pkl", ruta_base_train="data/datos_entrenamiento.csv", umbral_f1=0.50, umbral_psi=0.25):
-    """
-    Evaluación de telemetría y monitoreo dual de degradación (F1 y PSI).
-    """
     inicio_ttd = time.time()
     
     if not os.path.exists(modelo_path):
         raise FileNotFoundError(f"No se encontró el modelo en '{modelo_path}'")
         
-    # 1. Identificar la firma digital del modelo cargado
     hash_modelo, fecha_mod_modelo = obtener_huella_modelo(modelo_path)
     
     df_lote = pd.read_csv(ruta_lote_csv)
     X_test = df_lote.drop(columns=['Class'])
     y_test = df_lote['Class']
     
-    # 2. Inferencia con el artefacto actual
     modelo = joblib.load(modelo_path)
     y_pred = modelo.predict(X_test)
     f1 = f1_score(y_test, y_pred, pos_label=1)
     
-    # 3. Cálculo de PSI sobre la variable crítica TransactionAmt
     psi_valor = 0.0
     if os.path.exists(ruta_base_train):
         df_base = pd.read_csv(ruta_base_train)
@@ -139,7 +162,6 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
     print(f"[RESULTADO] Population Stability Index (PSI): {psi_valor:.4f} | Umbral PSI: {umbral_psi}")
     print(f"[RESULTADO] Drift Detection Time (TTD): {ttd_segundos:.6f} segundos")
     
-    # 4. Condición dual de degradación (F1 cae O PSI excede el umbral)
     hay_drift = (f1 < umbral_f1) or (psi_valor > umbral_psi)
     
     if hay_drift:
@@ -151,14 +173,13 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
         else:
             exito = disparar_reentrenamiento_github()
             if exito:
-                print("[INFO] Evento 'data_drift_detected' enviado con éxito a GitHub API.")
+                print("[INFO] Evento 'data_drift_detected' procesado correctamente.")
                 alerta_disparada = True
             else:
                 print("[ERROR] Falló el envío del evento a GitHub API.")
     else:
         print("[INFO] Estado del modelo estable. Rendimiento y PSI dentro de parámetros.")
         
-    # 5. Registro de Telemetría e Invariabilidad en CSV
     os.makedirs("logs", exist_ok=True)
     ruta_log = "logs/telemetria_experimento.csv"
     

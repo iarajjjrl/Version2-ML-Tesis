@@ -4,6 +4,11 @@ on:
   repository_dispatch:
     types: [data_drift_detected]
 
+# 🔹 CONTROL DE CONCURRENCIA: Solo 1 ejecutor activo a la vez
+concurrency:
+  group: mlops-retraining-pipeline
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
