@@ -1,71 +1,160 @@
 import os
+import sys
+import time
+import requests
+import subprocess
 import pandas as pd
-import numpy as np
+from datetime import datetime, timezone
+from dotenv import load_dotenv
 
-def generar_lote_sintetico(
-    ruta_base_csv="data/datos_entrenamiento.csv",
-    ruta_salida="data/lote_sintetico_actual.csv",
-    n_legitimas=3900,
-    n_fraudes=100,
-    inyectar_drift=False,
-    factor_drift=3.0
-):
+# Asegurar la ruta raíz del proyecto
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.monitor import evaluar_lote_produccion, obtener_huella_modelo
+
+load_dotenv()
+
+def esperar_github_actions_dinamico(timestamp_disparo, timeout_segundos=300, intervalo_poll=8):
     """
-    Genera transacciones sintéticas aplicando Muestreo Gaussiano Multivariable
-    y saneando los tipos de datos para preservar el esquema entero/categórico de IEEE-CIS.
+    Monitorea dinámicamente la API de GitHub Actions filtrando únicamente
+    por ejecuciones creadas posterior al timestamp_disparo de la alerta.
     """
-    print(f"[SINTETICO] Cargando datos base para modelar distribución desde '{ruta_base_csv}'...")
-    if not os.path.exists(ruta_base_csv):
-        raise FileNotFoundError(f"No se encontró el archivo base de datos en '{ruta_base_csv}'. Ejecuta prepare_data.py primero.")
+    token = os.getenv("GITHUB_TOKEN")
+    repo = os.getenv("GITHUB_REPOSITORY", "iarajjjrl/Version2-ML-Tesis")
+    
+    if not token:
+        print("[AUTO-POLL] ❌ No hay GITHUB_TOKEN en .env. No se puede monitorear la nube.")
+        return False
         
-    df_base = pd.read_csv(ruta_base_csv)
+    url = f"https://api.github.com/repos/{repo}/actions/runs"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
     
-    # Separar clases reales para modelar cada distribución independientemente
-    df_legitimas = df_base[df_base['Class'] == 0].drop(columns=['Class'])
-    df_fraudes = df_base[df_base['Class'] == 1].drop(columns=['Class'])
+    print("\n[AUTO-POLL] ⏳ Conectando con GitHub API. Esperando registro de la nueva ejecución en la nube...")
+    tiempo_inicio = time.time()
     
-    print(f"[SINTETICO] Sintetizando {n_legitimas} transacciones legítimas y {n_fraudes} fraudes...")
-    
-    # 1. Muestreo Multivariable Gaussiano para Transacciones Legítimas
-    mean_leg = df_legitimas.mean()
-    cov_leg = df_legitimas.cov()
-    sintetico_leg = np.random.multivariate_normal(mean_leg, cov_leg, size=n_legitimas)
-    df_sint_leg = pd.DataFrame(sintetico_leg, columns=df_legitimas.columns)
-    df_sint_leg['Class'] = 0
-    
-    # 2. Muestreo Multivariable Gaussiano para Transacciones Fraudulentas
-    mean_frd = df_fraudes.mean()
-    cov_frd = df_fraudes.cov()
-    sintetico_frd = np.random.multivariate_normal(mean_frd, cov_frd, size=n_fraudes)
-    df_sint_frd = pd.DataFrame(sintetico_frd, columns=df_fraudes.columns)
-    df_sint_frd['Class'] = 1
-    
-    # 3. Concatenar y reordenar aleatoriamente
-    df_sintetico = pd.concat([df_sint_leg, df_sint_frd]).sample(frac=1.0, random_state=42).reset_index(drop=True)
-    
-    # 4. SANEAMIENTO DE TIPOS DE DATOS (Alineación con esquema IEEE-CIS)
-    cols_enteras = ['card1', 'card2', 'card4', 'card6', 'ProductCD', 'addr1', 'addr2', 
-                    'dist1', 'C1', 'C2', 'C5', 'C6', 'C11', 'C13', 'D1', 'D4', 'DeviceType']
-    
-    for col in cols_enteras:
-        if col in df_sintetico.columns:
-            df_sintetico[col] = np.clip(np.round(df_sintetico[col]), a_min=0, a_max=None).astype(int)
+    while time.time() - tiempo_inicio < timeout_segundos:
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                runs = data.get("workflow_runs", [])
+                
+                # Filtrar solo ejecuciones creadas DESPUÉS del disparo
+                runs_nuevos = []
+                for r in runs:
+                    created_at_str = r.get("created_at")
+                    if created_at_str:
+                        dt_created = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                        ts_created = dt_created.timestamp()
+                        if ts_created >= (timestamp_disparo - 10):
+                            runs_nuevos.append(r)
+                
+                if runs_nuevos:
+                    latest_run = runs_nuevos[0]
+                    status = latest_run.get("status")
+                    conclusion = latest_run.get("conclusion")
+                    run_id = latest_run.get("id")
+                    
+                    if status in ["queued", "in_progress"]:
+                        print(f"[AUTO-POLL] 🚀 Trabajo activo en la nube: {status.upper()}... (Run ID: {run_id})")
+                    elif status == "completed":
+                        print(f"[AUTO-POLL] 🏁 ¡GitHub Actions ha finalizado! Conclusión: {conclusion.upper()} (Run ID: {run_id})")
+                        if conclusion == "success":
+                            print("[AUTO-POLL] ⏸️ Pausa de 5 segundos para consolidar la actualización en GitHub...")
+                            time.sleep(5)
+                            return True
+                        else:
+                            return False
+                else:
+                    print("[AUTO-POLL] ⏳ Aguardando a que la API de GitHub registre el evento...")
+        except Exception as e:
+            print(f"[AUTO-POLL] Error de conexión con GitHub API: {e}")
             
-    if 'TransactionAmt' in df_sintetico.columns:
-        df_sintetico['TransactionAmt'] = np.clip(df_sintetico['TransactionAmt'], a_min=0.01, a_max=None)
-    
-    # 5. Inyección Opcional de Data Drift en variables de negocio
-    if inyectar_drift:
-        print(f"[SINTETICO] ⚠️ Inyectando Data Drift (factor {factor_drift}) en variables críticas (TransactionAmt, card1, C1, C13)...")
-        df_sintetico['TransactionAmt'] = df_sintetico['TransactionAmt'] * np.random.uniform(2.5, 4.0, size=len(df_sintetico))
-        df_sintetico['card1'] = (df_sintetico['card1'] * np.random.uniform(1.5, 3.0, size=len(df_sintetico))).astype(int)
-        df_sintetico['C1'] = (df_sintetico['C1'] * np.random.uniform(2.0, 3.5, size=len(df_sintetico))).astype(int)
-        df_sintetico['C13'] = (df_sintetico['C13'] * np.random.uniform(2.0, 3.5, size=len(df_sintetico))).astype(int)
+        time.sleep(intervalo_poll)
         
-    os.makedirs(os.path.dirname(ruta_salida) or ".", exist_ok=True)
-    df_sintetico.to_csv(ruta_salida, index=False)
-    print(f"[SINTETICO] Lote sintético saneado generado en '{ruta_salida}' ({len(df_sintetico)} filas).\n")
-    return ruta_salida
+    print("[AUTO-POLL] ⏱️ Timeout alcanzado esperando a GitHub Actions.")
+    return False
+
+def ejecutar_git_pull_automatico():
+    try:
+        print("[AUTO-PULL] 📥 Ejecutando 'git pull' para descargar el nuevo modelo de producción...")
+        resultado = subprocess.run(["git", "pull", "origin", "main"], capture_output=True, text=True)
+        print(resultado.stdout)
+        return True
+    except Exception as e:
+        print(f"[AUTO-PULL] Error al ejecutar git pull: {e}")
+        return False
+
+def ejecutar_simulacion_stream():
+    print("="*60)
+    print("  SIMULADOR DE INGESTA TRANSACCIONAL EN TIEMPO REAL (MLOps)  ")
+    print("="*60)
+    
+    escenarios = [
+        {
+            "nombre": "Lote #1: Tráfico Normal de Producción (Operación Nominal)",
+            "ruta_csv": "data/prod_lote1_normal.csv"
+        },
+        {
+            "nombre": "Lote #2: Inyección de Concept Drift (Ataque Evasivo / Estacionalidad)",
+            "ruta_csv": "data/prod_lote2_drift.csv"
+        },
+        {
+            "nombre": "Lote #3: Tráfico Post-Reentrenamiento (Validación de Recuperación)",
+            "ruta_csv": "data/prod_lote3_post_retrain.csv"
+        }
+    ]
+    
+    for i, esc in enumerate(escenarios, 1):
+        print(f"\n\n[STREAM] --- SIMULANDO VENTANA #{i}: {esc['nombre']} ---")
+        
+        ruta_lote = esc["ruta_csv"]
+        if not os.path.exists(ruta_lote):
+            print(f"[ERROR] No se encontró el archivo '{ruta_lote}'. Ejecuta 'python src/prepare_data.py' primero.")
+            continue
+        
+        # BUCLE DE EXAMEN Y RE-EXAMEN (MLOps Loop)
+        aprobado = False
+        intentos = 0
+        max_intentos = 3
+        
+        while not aprobado and intentos < max_intentos:
+            intentos += 1
+            if intentos > 1:
+                print(f"\n[RE-EXAMEN] 🔄 Evaluando nuevamente la VENTANA #{i} tras reentrenamiento (Intento {intentos})...")
+            
+            timestamp_evaluacion = datetime.now(timezone.utc).timestamp()
+            
+            # Rendir examen sobre el lote de producción
+            registro = evaluar_lote_produccion(ruta_lote)
+            
+            f1 = registro["f1_score_fraude"]
+            psi = registro["psi_valor"]
+            alerta = registro["alerta_disparada"]
+            
+            # Criterio de Aprobación
+            if f1 >= 0.50 and psi <= 0.25:
+                print(f"[ÉXITO] ✅ El modelo APROBÓ el lote (F1: {f1:.4f} >= 0.50, PSI: {psi:.4f} <= 0.25). Avanzando...")
+                aprobado = True
+            else:
+                print(f"[REPROBADO] ❌ El modelo REPROBÓ el lote (F1: {f1:.4f}, PSI: {psi:.4f}).")
+                
+                if alerta:
+                    print("[STREAM] Alerta enviada a la nube. Esperando solución de GitHub Actions...")
+                    exito_nube = esperar_github_actions_dinamico(timestamp_disparo=timestamp_evaluacion)
+                    
+                    if exito_nube:
+                        ejecutar_git_pull_automatico()
+                        print("[STREAM] 🔄 Modelo actualizado descargado. Procediendo a RE-EVALUAR el mismo lote...")
+                    else:
+                        print("[STREAM] ⚠️ GitHub Actions no logró generar un modelo superior. Manteniendo modelo actual.")
+                        break
+                else:
+                    print("[STREAM] En periodo de Cooldown FinOps o Nube Ocupada. No se enviará evento duplicado.")
+                    break
 
 if __name__ == "__main__":
-    generar_lote_sintetico()
+    ejecutar_simulacion_stream()
