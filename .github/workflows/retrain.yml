@@ -33,6 +33,8 @@ jobs:
         pip install pandas numpy scikit-learn==1.7.2 optuna joblib requests python-dotenv
 
     - name: Ejecutar Autoajuste Bayesiano y Guardrails (Optuna)
+      env:
+        LOTE_DRIFT_PATH: "data/prod_lote2_drift.csv"
       run: |
         python src/auto_tune.py
 

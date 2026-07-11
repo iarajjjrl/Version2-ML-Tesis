@@ -1,5 +1,6 @@
 import os
 import sys
+import argparse
 import joblib
 import pandas as pd
 import numpy as np
@@ -14,25 +15,21 @@ from src.monitor import ModelWithThreshold
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-def cargar_datos_entrenamiento_consolidados(ruta_base="data/datos_entrenamiento.csv"):
+def cargar_datos_entrenamiento_consolidados(ruta_base="data/datos_entrenamiento.csv", ruta_lote_drift=None):
     if not os.path.exists(ruta_base):
         raise FileNotFoundError(f"No se encontró el archivo de entrenamiento en '{ruta_base}'")
         
     df_base = pd.read_csv(ruta_base)
     
-    # Feedback Loop: Anexar lote de drift si existe en la carpeta de producción
-    lotes_drift = ["data/prod_lote2_drift.csv"]
-    lotes_incorporados = []
-    
-    for ruta in lotes_drift:
-        if os.path.exists(ruta):
-            df_drift = pd.read_csv(ruta)
-            df_base = pd.concat([df_base, df_drift], ignore_index=True)
-            lotes_incorporados.append(ruta)
-            
-    if lotes_incorporados:
-        print(f"[FEEDBACK LOOP MLOPS] Incorporando {len(lotes_incorporados)} lote(s) real(es) de drift al reentrenamiento.")
+    # Solo incorporar el lote de drift si se pasa explícitamente durante un evento de reentrenamiento
+    if ruta_lote_drift and os.path.exists(ruta_lote_drift):
+        print(f"[FEEDBACK LOOP MLOPS] 🔄 Evento de reentrenamiento activo: Incorporando '{ruta_lote_drift}' al dataset...")
+        df_drift = pd.read_csv(ruta_lote_drift)
+        df_base = pd.concat([df_base, df_drift], ignore_index=True)
+        # Guardar la versión consolidada en el disco para el commit de GitHub
         df_base.to_csv(ruta_base, index=False)
+    else:
+        print(f"[ENTRENAMIENTO BASE] 🟢 Cargando dataset de entrenamiento limpio ({len(df_base)} filas). Sin contaminación previa.")
         
     return df_base
 
@@ -51,12 +48,12 @@ def encontrar_umbral_optimo(modelo, X_val, y_val):
             
     return mejor_f1, mejor_umbral
 
-def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv", umbral_guardrail=0.50, n_trials=5):
+def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv", ruta_lote_drift=None, umbral_guardrail=0.50, n_trials=5):
     print("="*60)
     print("  AUTOTUNE MLOPS: BÚSQUEDA BAYESIANA ÁGIL (FEEDBACK LOOP)")
     print("="*60)
     
-    df = cargar_datos_entrenamiento_consolidados(ruta_train)
+    df = cargar_datos_entrenamiento_consolidados(ruta_train, ruta_lote_drift=ruta_lote_drift)
     X = df.drop(columns=['Class'])
     y = df['Class']
     
@@ -159,4 +156,11 @@ def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv"
         raise ValueError(f"Reentrenamiento abortado por Guardrail (F1 {f1_ganador:.4f} < {umbral_guardrail})")
 
 if __name__ == "__main__":
-    evaluar_y_seleccionar_mejor_modelo()
+    parser = argparse.ArgumentParser(description="AutoTune MLOps")
+    parser.add_argument("--lote-drift", type=str, default=None, help="Ruta del lote con drift a incorporar durante un reentrenamiento")
+    args = parser.parse_args()
+    
+    # Detecta si se pasa por argumento CLI o por variable de entorno de GitHub Actions
+    lote_drift_env = os.getenv("LOTE_DRIFT_PATH", args.lote_drift)
+    
+    evaluar_y_seleccionar_mejor_modelo(ruta_lote_drift=lote_drift_env)
