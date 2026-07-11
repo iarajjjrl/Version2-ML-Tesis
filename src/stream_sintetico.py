@@ -1,24 +1,20 @@
-import time
-import subprocess
-from generate_synthetic import generar_lote_sintetico
-from monitor import evaluar_lote_produccion
 import os
+import time
 import requests
+import subprocess
+import pandas as pd
 from dotenv import load_dotenv
+from src.generate_synthetic import generar_lote_sintetico
+from src.monitor import evaluar_lote_produccion, obtener_huella_modelo
 
 load_dotenv()
 
-def esperar_github_actions_dinamico(intervalo=10, timeout_minutos=5):
-    """
-    Consulta activamente la API de GitHub para saber cuándo termina 
-    la ejecución del workflow efímero sin usar tiempos fijos.
-    """
+def esperar_github_actions_dinamico(timeout_segundos=300, intervalo_poll=10):
     token = os.getenv("GITHUB_TOKEN")
     repo = os.getenv("GITHUB_REPOSITORY", "iarajjjrl/Version2-ML-Tesis")
     
     if not token:
-        print("[AUTO-POLL] ⚠️ No se encontró GITHUB_TOKEN en el .env. Usando pausa fija de 90s...")
-        time.sleep(90)
+        print("[AUTO-POLL] ❌ No hay GITHUB_TOKEN en .env. No se puede monitorear la nube.")
         return False
         
     url = f"https://api.github.com/repos/{repo}/actions/runs"
@@ -28,92 +24,106 @@ def esperar_github_actions_dinamico(intervalo=10, timeout_minutos=5):
     }
     
     print("\n[AUTO-POLL] Conectando con GitHub API para monitorear el reentrenamiento...")
-    # Ventana de gracia corta para que GitHub registre el evento entrante
-    time.sleep(5) 
+    tiempo_inicio = time.time()
     
-    inicio_tiempo = time.time()
-    while (time.time() - inicio_tiempo) < (timeout_minutos * 60):
+    while time.time() - tiempo_inicio < timeout_segundos:
         try:
             response = requests.get(url, headers=headers)
             if response.status_code == 200:
-                runs = response.json().get("workflow_runs", [])
+                data = response.json()
+                runs = data.get("workflow_runs", [])
                 if runs:
-                    ultima_run = runs[0]
-                    status = ultima_run.get("status")          # queued, in_progress, completed
-                    conclusion = ultima_run.get("conclusion")  # success, failure, startup_failure
-                    run_id = ultima_run.get("id")
+                    latest_run = runs[0]
+                    status = latest_run.get("status")
+                    conclusion = latest_run.get("conclusion")
+                    run_id = latest_run.get("id")
                     
                     if status in ["queued", "in_progress"]:
-                        print(f"[AUTO-POLL] El pipeline en la nube está: {status.upper()}... Reintentando en {intervalo}s. (Run ID: {run_id})")
+                        print(f"[AUTO-POLL] El pipeline en la nube está: {status.upper()}... (Run ID: {run_id})")
                     elif status == "completed":
                         print(f"[AUTO-POLL] 🏁 ¡GitHub Actions ha terminado! Conclusión: {conclusion.upper()}")
                         return conclusion == "success"
-            else:
-                print(f"[AUTO-POLL] Código de respuesta inesperado de GitHub API: {response.status_code}")
         except Exception as e:
-            print(f"[AUTO-POLL] Error de conexión con la API: {e}")
+            print(f"[AUTO-POLL] Error de conexión: {e}")
             
-        time.sleep(intervalo)
+        time.sleep(intervalo_poll)
         
-    print("[AUTO-POLL] ⏱️ Timeout alcanzado esperando el reentrenamiento.")
+    print("[AUTO-POLL] ⏱️ Timeout alcanzado esperando a GitHub Actions.")
     return False
 
 def ejecutar_git_pull_automatico():
-    """Ejecuta git pull mediante Python para actualizar el modelo local."""
-    print("\n[AUTO-PULL] Descargando el nuevo modelo reentrenado desde GitHub...")
     try:
-        resultado = subprocess.run(
-            ["git", "pull", "origin", "main"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        print("[AUTO-PULL] ✅ Repositorio actualizado con éxito:")
-        print(f"            {resultado.stdout.strip()}")
+        print("[AUTO-PULL] Ejecutando 'git pull' para descargar el nuevo modelo de producción...")
+        resultado = subprocess.run(["git", "pull", "origin", "main"], capture_output=True, text=True)
+        print(resultado.stdout)
+        return True
     except Exception as e:
-        print(f"[AUTO-PULL] ❌ Error al ejecutar git pull: {str(e)}")
+        print(f"[AUTO-PULL] Error al ejecutar git pull: {e}")
+        return False
 
-def ejecutar_streaming_sintetico():
-    print("==========================================================")
+def ejecutar_simulacion_stream():
+    print("="*60)
     print("  SIMULADOR DE INGESTA TRANSACCIONAL SINTÉTICA (MLOps)    ")
-    print("==========================================================\n")
+    print("="*60)
     
-    pasos_simulacion = [
-        {"paso": 1, "drift": False, "descripcion": "Lote Sintético Normal - Operación Habitual"},
-        {"paso": 2, "drift": True,  "descripcion": "Lote Sintético CON DRIFT - Ataque de Fraude Evasivo"},
-        {"paso": 3, "drift": False, "descripcion": "Lote Sintético Post-Reentrenamiento (Validación)"},
+    os.makedirs("data", exist_ok=True)
+    ruta_lote = "data/lote_sintetico_actual.csv"
+    
+    escenarios = [
+        {"nombre": "Lote Sintético Normal - Operación Habitual", "drift": False, "factor": 1.0},
+        {"nombre": "Lote Sintético CON DRIFT - Ataque de Fraude Evasivo", "drift": True, "factor": 3.0},
+        {"nombre": "Lote Sintético Post-Reentrenamiento (Validación)", "drift": False, "factor": 1.0}
     ]
     
-    for estado in pasos_simulacion:
-        print(f"\n[STREAM] --- SIMULANDO VENTANA #{estado['paso']}: {estado['descripcion']} ---")
+    for i, esc in enumerate(escenarios, 1):
+        print(f"\n\n[STREAM] --- SIMULANDO VENTANA #{i}: {esc['nombre']} ---")
         
-        # 1. Generar la data sintética en tiempo real
-        ruta_lote = generar_lote_sintetico(
-            ruta_base_csv="data/datos_entrenamiento.csv",
-            num_muestras=4000,
-            proporcion_fraude=0.025,
-            inyectar_drift=estado['drift']
+        # 1. Generar lote transaccional
+        generar_lote_sintetico(
+            ruta_salida=ruta_lote,
+            n_legitimas=3900,
+            n_fraudes=100,
+            inyectar_drift=esc['drift'],
+            factor_drift=esc['factor']
         )
         
-        # 2. Evaluar el modelo vigente contra la data recién generada
-        evaluar_lote_produccion(ruta_lote, "models/modelo_vigente.pkl")
+        # 2. BUCLE DE EXAMEN Y RE-EXAMEN (MLOps Loop)
+        aprobado = False
+        intentos = 0
+        max_intentos = 2  # Máximo 1 reentrenamiento por lote
         
-        # Si acabamos de simular el lote con Drift (Paso 2), activamos el sondeo dinámico
-        if estado['drift']:
-            print("\n[STREAM] Lanzando monitor dinámico de infraestructura efímera...")
+        while not aprobado and intentos < max_intentos:
+            intentos += 1
+            if intentos > 1:
+                print(f"\n[RE-EXAMEN] 🔄 Evaluando nuevamente la VENTANA #{i} tras reentrenamiento (Intento {intentos})...")
             
-            # Reemplazo de la pausa fija por la llamada al sondeo dinámico de la API
-            exito_nube = esperar_github_actions_dinamico(intervalo=10)
+            # Rendir examen
+            registro = evaluar_lote_produccion(ruta_lote)
             
-            if exito_nube:
-                # 3. Traer el nuevo modelo actualizado desde GitHub de forma automática si la nube fue exitosa
-                ejecutar_git_pull_automatico()
+            f1 = registro["f1_score_fraude"]
+            psi = registro["psi_valor"]
+            alerta = registro["alerta_disparada"]
+            
+            # Criterio de Aprobación
+            if f1 >= 0.50 and psi <= 0.25:
+                print(f"[ÉXITO] ✅ El modelo APROBÓ el lote (F1: {f1:.4f} >= 0.50, PSI: {psi:.4f} <= 0.25). Avanzando...")
+                aprobado = True
             else:
-                print("\n[AUTO-PULL] ❌ GitHub Actions falló o el Guardrail de Gobernanza rechazó el modelo en la nube.")
-                print("[AUTO-PULL] Manteniendo el modelo actual en producción por resiliencia y continuidad del servicio.")
-        else:
-            print("[STREAM] Pausa de 10 segundos antes de la siguiente ingesta...")
-            time.sleep(10)
+                print(f"[REPROBADO] ❌ El modelo REPROBÓ el lote (F1: {f1:.4f}, PSI: {psi:.4f}).")
+                
+                if alerta:
+                    print("[STREAM] Alerta enviada a la nube. Esperando solución de GitHub Actions...")
+                    exito_nube = esperar_github_actions_dinamico()
+                    
+                    if exito_nube:
+                        ejecutar_git_pull_automatico()
+                        print("[STREAM] 🔄 Modelo actualizado descargado. Procediendo a RE-EVALUAR el mismo lote...")
+                    else:
+                        print("[STREAM] ⚠️ GitHub Actions no logró generar un modelo superior. Manteniendo modelo actual.")
+                        break  # Salir del bucle para continuar con el siguiente lote por resiliencia
+                else:
+                    print("[STREAM] En periodo de Cooldown FinOps. No se enviará evento duplicado.")
+                    break
 
 if __name__ == "__main__":
-    ejecutar_streaming_sintetico()
+    ejecutar_simulacion_stream()
