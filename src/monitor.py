@@ -11,6 +11,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+class ModelWithThreshold:
+    """
+    Wrapper de producción que aplica el umbral óptimo de probabilidad
+    al ejecutar predict(), manteniendo compatibilidad total con joblib.
+    """
+    def __init__(self, base_model, threshold=0.5):
+        self.base_model = base_model
+        self.threshold = threshold
+        
+    def predict(self, X):
+        if hasattr(self.base_model, "predict_proba"):
+            probs = self.base_model.predict_proba(X)[:, 1]
+            return (probs >= self.threshold).astype(int)
+        return self.base_model.predict(X)
+
 def obtener_huella_modelo(ruta_modelo="models/modelo_vigente.pkl"):
     """
     Calcula la firma digital (SHA256) y el timestamp del archivo .pkl.
@@ -57,9 +72,6 @@ def calcular_psi(esperado, actual, num_buckets=10):
         return 0.0
 
 def consultar_ultimo_cooldown_alerta(ruta_log="logs/telemetria_experimento.csv", cooldown_segundos=180):
-    """
-    Bloqueo FinOps de exclusión temporal (Cooldown).
-    """
     if not os.path.exists(ruta_log):
         return False
         
@@ -68,7 +80,6 @@ def consultar_ultimo_cooldown_alerta(ruta_log="logs/telemetria_experimento.csv",
         if df_log.empty or 'alerta_disparada' not in df_log.columns:
             return False
             
-        # Parseo robusto para tipos de datos booleanos o texto en CSV
         alertas = df_log[df_log['alerta_disparada'].astype(str).str.lower().isin(['true', '1'])]
         if alertas.empty:
             return False
@@ -83,10 +94,6 @@ def consultar_ultimo_cooldown_alerta(ruta_log="logs/telemetria_experimento.csv",
     return False
 
 def hay_reentrenamiento_activo_en_nube():
-    """
-    Consulta si GitHub Actions ya tiene una máquina ejecutando o en cola.
-    Evita disparar eventos duplicados a la API.
-    """
     token = os.getenv("GITHUB_TOKEN")
     repo = os.getenv("GITHUB_REPOSITORY", "iarajjjrl/Version2-ML-Tesis")
     if not token:
@@ -109,12 +116,9 @@ def hay_reentrenamiento_activo_en_nube():
     return False
 
 def disparar_reentrenamiento_github():
-    """
-    Envía la petición Webhook a GitHub Actions si no hay ejecuciones activas.
-    """
     if hay_reentrenamiento_activo_en_nube():
         print("[NUBE OCUPADA] ⏳ GitHub Actions ya tiene una ejecución activa. Omitiendo disparo duplicado.")
-        return True  # Devuelve True para que el orquestador espere la ejecución existente
+        return True
 
     token = os.getenv("GITHUB_TOKEN")
     repo = os.getenv("GITHUB_REPOSITORY", "iarajjjrl/Version2-ML-Tesis")
@@ -203,6 +207,6 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
     return registro
 
 if __name__ == "__main__":
-    lote_prueba = "data/prod_dia1_normal.csv"
+    lote_prueba = "data/prod_lote1_normal.csv"
     if os.path.exists(lote_prueba):
         evaluar_lote_produccion(lote_prueba)

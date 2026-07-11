@@ -1,4 +1,5 @@
 import os
+import sys
 import joblib
 import pandas as pd
 import numpy as np
@@ -7,20 +8,13 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import f1_score
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
 
+# Asegurar la ruta raíz del proyecto
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from src.monitor import ModelWithThreshold
+
 # Desactivar avisos verbosos de Optuna
 optuna.logging.set_verbosity(optuna.logging.WARNING)
-
-class ModelWithThreshold:
-    """Wrapper de producción para aplicar el umbral calibrado en predict()."""
-    def __init__(self, base_model, threshold=0.5):
-        self.base_model = base_model
-        self.threshold = threshold
-        
-    def predict(self, X):
-        if hasattr(self.base_model, "predict_proba"):
-            probs = self.base_model.predict_proba(X)[:, 1]
-            return (probs >= self.threshold).astype(int)
-        return self.base_model.predict(X)
 
 def encontrar_umbral_optimo(modelo, X_val, y_val):
     probs = modelo.predict_proba(X_val)[:, 1]
@@ -134,7 +128,6 @@ def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv"
     if f1_ganador >= umbral_guardrail:
         print(f"[GUARDRAIL APROBADO] ✅ El modelo '{nombre_ganador}' alcanzó un F1-Score de {f1_ganador:.4f}.")
         
-        # Re-entrenar modelo ganador sobre el 100% de la data de entrenamiento
         modelo_ganador.fit(X, y)
         artefacto_final = ModelWithThreshold(base_model=modelo_ganador, threshold=th_ganador)
         
