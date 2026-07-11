@@ -140,7 +140,7 @@ def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv"
         
         os.makedirs("models", exist_ok=True)
         ruta_modelo = "models/modelo_vigente.pkl"
-        joblib.dump(artefacto_final, ruta_modelo)
+        joblib.dump(artefacto_final, ruta_modelo, compress=3)
         print(f"[ARTEFACTO] Modelo óptimo guardado exitosamente en '{ruta_modelo}'.")
     else:
         print(f"[GUARDRAIL RECHAZADO] ❌ Ningún modelo superó el umbral de {umbral_guardrail}. F1 máximo: {f1_ganador:.4f}.")
