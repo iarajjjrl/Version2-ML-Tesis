@@ -12,6 +12,11 @@ def preparar_ieee_fraud(ruta_trans="train_transaction.csv", ruta_id="train_ident
     print("[INFO] Unificando archivos mediante TransactionID...")
     df = pd.merge(df_trans, df_id, on='TransactionID', how='left')
     
+    # 1. ORDENAMIENTO TEMPORAL ESTRICTO (Metodología 4.2: Evita Data Leakage)
+    if 'TransactionDT' in df.columns:
+        print("[INFO] Ordenando cronológicamente el dataset por TransactionDT...")
+        df = df.sort_values(by='TransactionDT').reset_index(drop=True)
+    
     cols_negocio = [
         'TransactionAmt', 'ProductCD', 'card1', 'card2', 'card4', 'card6',
         'P_emaildomain', 'R_emaildomain', 'addr1', 'addr2', 'dist1',
@@ -34,7 +39,7 @@ def preparar_ieee_fraud(ruta_trans="train_transaction.csv", ruta_id="train_ident
             
     df_filtrado = df_filtrado.rename(columns={'isFraud': 'Class'})
     
-    # Muestreo del 30% para dar suficiente densidad estadística
+    # Muestreo del 30% para MLOps
     print("[INFO] Generando muestreo estratificado (30% para MLOps)...")
     X = df_filtrado.drop(columns=['Class'])
     y = df_filtrado['Class']
@@ -61,8 +66,7 @@ def preparar_ieee_fraud(ruta_trans="train_transaction.csv", ruta_id="train_ident
     X_train.assign(Class=y_train).to_csv("data/datos_entrenamiento.csv", index=False)
     X_p1.assign(Class=y_p1).to_csv("data/prod_dia1_normal.csv", index=False)
     X_p2_drift.assign(Class=y_p2).to_csv("data/prod_dia2_drift.csv", index=False)
-    
-    print("[INFO] ✅ Archivos de datos 100% numéricos generados exitosamente en 'data/'.")
+    print("[INFO] ✅ Archivos de datos 100% numéricos ordenados cronológicamente en 'data/'.")
 
 if __name__ == "__main__":
     preparar_ieee_fraud()

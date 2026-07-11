@@ -2,6 +2,61 @@ import time
 import subprocess
 from generate_synthetic import generar_lote_sintetico
 from monitor import evaluar_lote_produccion
+import os
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()
+
+def esperar_github_actions_dinamico(intervalo=10, timeout_minutos=5):
+    """
+    Consulta activamente la API de GitHub para saber cuándo termina 
+    la ejecución del workflow efímero sin usar tiempos fijos.
+    """
+    token = os.getenv("GITHUB_TOKEN")
+    repo = os.getenv("GITHUB_REPOSITORY", "iarajjjrl/Version2-ML-Tesis")
+    
+    if not token:
+        print("[AUTO-POLL] ⚠️ No se encontró GITHUB_TOKEN en el .env. Usando pausa fija de 90s...")
+        time.sleep(90)
+        return False
+        
+    url = f"https://api.github.com/repos/{repo}/actions/runs"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    
+    print("\n[AUTO-POLL] Conectando con GitHub API para monitorear el reentrenamiento...")
+    # Ventana de gracia corta para que GitHub registre el evento entrante
+    time.sleep(5) 
+    
+    inicio_tiempo = time.time()
+    while (time.time() - inicio_tiempo) < (timeout_minutos * 60):
+        try:
+            response = requests.get(url, headers=headers)
+            if response.status_code == 200:
+                runs = response.json().get("workflow_runs", [])
+                if runs:
+                    ultima_run = runs[0]
+                    status = ultima_run.get("status")          # queued, in_progress, completed
+                    conclusion = ultima_run.get("conclusion")  # success, failure, startup_failure
+                    run_id = ultima_run.get("id")
+                    
+                    if status in ["queued", "in_progress"]:
+                        print(f"[AUTO-POLL] El pipeline en la nube está: {status.upper()}... Reintentando en {intervalo}s. (Run ID: {run_id})")
+                    elif status == "completed":
+                        print(f"[AUTO-POLL] 🏁 ¡GitHub Actions ha terminado! Conclusión: {conclusion.upper()}")
+                        return conclusion == "success"
+            else:
+                print(f"[AUTO-POLL] Código de respuesta inesperado de GitHub API: {response.status_code}")
+        except Exception as e:
+            print(f"[AUTO-POLL] Error de conexión con la API: {e}")
+            
+        time.sleep(intervalo)
+        
+    print("[AUTO-POLL] ⏱️ Timeout alcanzado esperando el reentrenamiento.")
+    return False
 
 def ejecutar_git_pull_automatico():
     """Ejecuta git pull mediante Python para actualizar el modelo local."""
@@ -41,17 +96,21 @@ def ejecutar_streaming_sintetico():
         )
         
         # 2. Evaluar el modelo vigente contra la data recién generada
-        # NOTA: evaluamos y capturamos si la alerta de drift fue disparada
-        # Para esto, evaluamos el lote sintético generado
         evaluar_lote_produccion(ruta_lote, "models/modelo_vigente.pkl")
         
-        # Si acabamos de simular el lote con Drift (Paso 2), esperamos a la nube y traemos el nuevo modelo
+        # Si acabamos de simular el lote con Drift (Paso 2), activamos el sondeo dinámico
         if estado['drift']:
-            print("\n[STREAM] ⏳ Pausa de 60 segundos: Esperando que GitHub Actions termine el reentrenamiento en la nube...")
-            time.sleep(60) # Tiempo de espera para que Optuna corra en Actions
+            print("\n[STREAM] Lanzando monitor dinámico de infraestructura efímera...")
             
-            # 3. Traer el nuevo modelo actualizado desde GitHub de forma automática
-            ejecutar_git_pull_automatico()
+            # Reemplazo de la pausa fija por la llamada al sondeo dinámico de la API
+            exito_nube = esperar_github_actions_dinamico(intervalo=10)
+            
+            if exito_nube:
+                # 3. Traer el nuevo modelo actualizado desde GitHub de forma automática si la nube fue exitosa
+                ejecutar_git_pull_automatico()
+            else:
+                print("\n[AUTO-PULL] ❌ GitHub Actions falló o el Guardrail de Gobernanza rechazó el modelo en la nube.")
+                print("[AUTO-PULL] Manteniendo el modelo actual en producción por resiliencia y continuidad del servicio.")
         else:
             print("[STREAM] Pausa de 10 segundos antes de la siguiente ingesta...")
             time.sleep(10)

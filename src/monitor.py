@@ -1,5 +1,7 @@
 import os
 import time
+import hashlib
+import numpy as np
 import pandas as pd
 import joblib
 import requests
@@ -7,16 +9,64 @@ from datetime import datetime, timedelta
 from sklearn.metrics import f1_score
 from dotenv import load_dotenv
 
-# Cargar credenciales locales desde .env (GITHUB_TOKEN, etc.)
 load_dotenv()
+
+def obtener_huella_modelo(ruta_modelo="models/modelo_vigente.pkl"):
+    """
+    Calcula la firma digital (SHA256) y el timestamp de modificación del binario .pkl.
+    Permite demostrar dinámicamente qué versión exacta del modelo está cargada en memoria.
+    """
+    if not os.path.exists(ruta_modelo):
+        return "INEXISTENTE", "N/A"
+    
+    try:
+        hasher = hashlib.sha256()
+        with open(ruta_modelo, 'rb') as f:
+            hasher.update(f.read())
+        hash_sha256 = hasher.hexdigest()[:12]  # Primeros 12 caracteres del Hash
+        
+        mtime = os.path.getmtime(ruta_modelo)
+        fecha_mod = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M:%S")
+        
+        return hash_sha256, fecha_mod
+    except Exception as e:
+        return "ERROR_HASH", "N/A"
+
+def calcular_psi(esperado, actual, num_buckets=10):
+    """
+    Calcula el Índice de Estabilidad de la Población (PSI) entre la 
+    distribución base de entrenamiento y la distribución actual de inferencia.
+    (Metodología 4.3 & Marco Teórico 3.4)
+    """
+    try:
+        eps = 1e-4  # Evitar ceros en la operación logarítmica
+        
+        percentiles = np.linspace(0, 100, num_buckets + 1)
+        buckets = np.percentile(esperado, percentiles)
+        buckets[0] = -np.inf
+        buckets[-1] = np.inf
+        
+        counts_esp, _ = np.histogram(esperado, bins=buckets)
+        counts_act, _ = np.histogram(actual, bins=buckets)
+        
+        pct_esp = counts_esp / len(esperado)
+        pct_act = counts_act / len(actual)
+        
+        pct_esp = np.where(pct_esp == 0, eps, pct_esp)
+        pct_act = np.where(pct_act == 0, eps, pct_act)
+        
+        psi_val = np.sum((pct_act - pct_esp) * np.log(pct_act / pct_esp))
+        return float(psi_val)
+    except Exception:
+        return 0.0
 
 def consultar_ultimo_cooldown_alerta(ruta_log="logs/telemetria_experimento.csv", cooldown_segundos=180):
     """
-    Verifica si ya se disparó una alerta recientemente para evitar 
-    múltiples ejecuciones duplicadas en GitHub Actions (Cooldown).
+    Mecanismo FinOps de exclusión temporal (Cooldown).
+    Bloquea disparos duplicados a GitHub Actions si se envió una alerta previa en < 180s.
     """
     if not os.path.exists(ruta_log):
-        return False  # No hay historial, se permite la alerta
+        return False
         
     try:
         df_log = pd.read_csv(ruta_log)
@@ -27,20 +77,20 @@ def consultar_ultimo_cooldown_alerta(ruta_log="logs/telemetria_experimento.csv",
         ultima_alerta_str = alertas.iloc[-1]['timestamp']
         ultima_alerta_dt = datetime.strptime(ultima_alerta_str, "%Y-%m-%d %H:%M:%S")
         
-        # Si la última alerta fue hace menos del tiempo de cooldown
         if datetime.now() - ultima_alerta_dt < timedelta(seconds=cooldown_segundos):
-            return True  # Está en período de enfiamiento (Cooldown)
+            return True
     except Exception:
         pass
     return False
 
 def disparar_reentrenamiento_github():
-    """Envía el evento Webhook HTTP a la API de GitHub Actions."""
+    """
+    Envía un Webhook asíncrono POST (repository_dispatch) hacia la API REST de GitHub.
+    """
     token = os.getenv("GITHUB_TOKEN")
     repo = os.getenv("GITHUB_REPOSITORY", "iarajjjrl/Version2-ML-Tesis")
-    
     if not token:
-        print("[ERROR] No se encontró GITHUB_TOKEN en el archivo .env ni en las variables de entorno.")
+        print("[ERROR] No se encontró GITHUB_TOKEN en el archivo .env.")
         return False
         
     url = f"https://api.github.com/repos/{repo}/dispatches"
@@ -49,44 +99,55 @@ def disparar_reentrenamiento_github():
         "Accept": "application/vnd.github.v3+json"
     }
     data = {"event_type": "data_drift_detected"}
-    
     response = requests.post(url, json=data, headers=headers)
     return response.status_code in [200, 204]
 
-def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pkl", umbral_f1=0.50):
+def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pkl", ruta_base_train="data/datos_entrenamiento.csv", umbral_f1=0.50, umbral_psi=0.25):
     """
-    Evalúa el rendimiento del modelo sobre un lote de transacciones, 
-    registra el tiempo de detección (TTD) y dispara alertas si hay Data Drift.
+    Evaluación de telemetría y monitoreo dual de degradación (F1 y PSI).
     """
     inicio_ttd = time.time()
     
     if not os.path.exists(modelo_path):
         raise FileNotFoundError(f"No se encontró el modelo en '{modelo_path}'")
         
+    # 1. Identificar la firma digital del modelo cargado
+    hash_modelo, fecha_mod_modelo = obtener_huella_modelo(modelo_path)
+    
     df_lote = pd.read_csv(ruta_lote_csv)
     X_test = df_lote.drop(columns=['Class'])
     y_test = df_lote['Class']
     
-    # Carga dinámica del modelo desde el disco (Asegura leer la versión más reciente)
+    # 2. Inferencia con el artefacto actual
     modelo = joblib.load(modelo_path)
     y_pred = modelo.predict(X_test)
-    
     f1 = f1_score(y_test, y_pred, pos_label=1)
-    ttd_segundos = time.time() - inicio_ttd
     
+    # 3. Cálculo de PSI sobre la variable crítica TransactionAmt
+    psi_valor = 0.0
+    if os.path.exists(ruta_base_train):
+        df_base = pd.read_csv(ruta_base_train)
+        if 'TransactionAmt' in df_base.columns and 'TransactionAmt' in X_test.columns:
+            psi_valor = calcular_psi(df_base['TransactionAmt'], X_test['TransactionAmt'])
+            
+    ttd_segundos = time.time() - inicio_ttd
     alerta_disparada = False
     
     print(f"\n[INFO] Evaluando telemetría sobre el lote: {ruta_lote_csv}")
-    print(f"[RESULTADO] F1-Score (Fraude): {f1:.4f} | Umbral: {umbral_f1}")
+    print(f"[MODELO ACTIVO] SHA256: [{hash_modelo}] | Compilado/Actualizado: {fecha_mod_modelo}")
+    print(f"[RESULTADO] F1-Score (Fraude): {f1:.4f} | Umbral Mínimo: {umbral_f1}")
+    print(f"[RESULTADO] Population Stability Index (PSI): {psi_valor:.4f} | Umbral PSI: {umbral_psi}")
     print(f"[RESULTADO] Drift Detection Time (TTD): {ttd_segundos:.6f} segundos")
     
-    if f1 < umbral_f1:
-        print(f"[ALERTA] Degradación detectada: F1-Score ({f1:.4f}) < Umbral ({umbral_f1}).")
+    # 4. Condición dual de degradación (F1 cae O PSI excede el umbral)
+    hay_drift = (f1 < umbral_f1) or (psi_valor > umbral_psi)
+    
+    if hay_drift:
+        print(f"[ALERTA] ⚠️ Degradación detectada (F1: {f1:.4f} < {umbral_f1} o PSI: {psi_valor:.4f} > {umbral_psi}).")
         
-        # Validar período de enfriamiento (Cooldown anti-spam)
         en_cooldown = consultar_ultimo_cooldown_alerta()
         if en_cooldown:
-            print("[COOLDOWN] Alerta previa enviada recientemente. Omitiendo disparo duplicado a GitHub API.")
+            print("[COOLDOWN] Alerta previa enviada recientemente (< 180s). Omitiendo disparo duplicado a GitHub API.")
         else:
             exito = disparar_reentrenamiento_github()
             if exito:
@@ -95,16 +156,18 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
             else:
                 print("[ERROR] Falló el envío del evento a GitHub API.")
     else:
-        print("[INFO] Estado del modelo estable. Rendimiento dentro de los parámetros permitidos.")
+        print("[INFO] Estado del modelo estable. Rendimiento y PSI dentro de parámetros.")
         
-    # Registrar Telemetría en archivo CSV acumulativo
+    # 5. Registro de Telemetría e Invariabilidad en CSV
     os.makedirs("logs", exist_ok=True)
     ruta_log = "logs/telemetria_experimento.csv"
     
     registro = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "lote_evaluado": ruta_lote_csv,
+        "modelo_sha256": hash_modelo,
         "f1_score_fraude": round(f1, 4),
+        "psi_valor": round(psi_valor, 4),
         "ttd_segundos": round(ttd_segundos, 6),
         "alerta_disparada": alerta_disparada
     }
@@ -116,9 +179,9 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
         df_nuevo.to_csv(ruta_log, mode='a', header=False, index=False)
         
     print(f"[INFO] Telemetría registrada correctamente en '{ruta_log}'.")
+    return registro
 
 if __name__ == "__main__":
-    # Prueba individual por defecto al ejecutar este script directamente
     lote_prueba = "data/prod_dia1_normal.csv"
     if os.path.exists(lote_prueba):
         evaluar_lote_produccion(lote_prueba)
