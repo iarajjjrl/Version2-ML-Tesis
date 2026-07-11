@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 # Asegurar la ruta raíz del proyecto
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from src.generate_synthetic import generar_lote_sintetico
 from src.monitor import evaluar_lote_produccion, obtener_huella_modelo
 
 load_dotenv()
@@ -43,7 +42,7 @@ def esperar_github_actions_dinamico(timestamp_disparo, timeout_segundos=300, int
                 data = response.json()
                 runs = data.get("workflow_runs", [])
                 
-                # Filtrar solo ejecuciones creadas DESPUÉS del disparo (con 10s de margen por reloj)
+                # Filtrar solo ejecuciones creadas DESPUÉS del disparo
                 runs_nuevos = []
                 for r in runs:
                     created_at_str = r.get("created_at")
@@ -91,44 +90,45 @@ def ejecutar_git_pull_automatico():
 
 def ejecutar_simulacion_stream():
     print("="*60)
-    print("  SIMULADOR DE INGESTA TRANSACCIONAL SINTÉTICA (MLOps)    ")
+    print("  SIMULADOR DE INGESTA TRANSACCIONAL EN TIEMPO REAL (MLOps)  ")
     print("="*60)
     
-    os.makedirs("data", exist_ok=True)
-    ruta_lote = "data/lote_sintetico_actual.csv"
-    
     escenarios = [
-        {"nombre": "Lote Sintético Normal - Operación Habitual", "drift": False, "factor": 1.0},
-        {"nombre": "Lote Sintético CON DRIFT - Ataque de Fraude Evasivo", "drift": True, "factor": 3.0},
-        {"nombre": "Lote Sintético Post-Reentrenamiento (Validación)", "drift": False, "factor": 1.0}
+        {
+            "nombre": "Lote #1: Tráfico Normal de Producción (Operación Nominal)",
+            "ruta_csv": "data/prod_lote1_normal.csv"
+        },
+        {
+            "nombre": "Lote #2: Inyección de Concept Drift (Ataque Evasivo / Estacionalidad)",
+            "ruta_csv": "data/prod_lote2_drift.csv"
+        },
+        {
+            "nombre": "Lote #3: Tráfico Post-Reentrenamiento (Validación de Recuperación)",
+            "ruta_csv": "data/prod_lote3_post_retrain.csv"
+        }
     ]
     
     for i, esc in enumerate(escenarios, 1):
         print(f"\n\n[STREAM] --- SIMULANDO VENTANA #{i}: {esc['nombre']} ---")
         
-        # 1. Generar lote transaccional
-        generar_lote_sintetico(
-            ruta_salida=ruta_lote,
-            n_legitimas=3900,
-            n_fraudes=100,
-            inyectar_drift=esc['drift'],
-            factor_drift=esc['factor']
-        )
+        ruta_lote = esc["ruta_csv"]
+        if not os.path.exists(ruta_lote):
+            print(f"[ERROR] No se encontró el archivo '{ruta_lote}'. Ejecuta 'python src/prepare_data.py' primero.")
+            continue
         
-        # 2. BUCLE DE EXAMEN Y RE-EXAMEN (MLOps Loop)
+        # BUCLE DE EXAMEN Y RE-EXAMEN (MLOps Loop)
         aprobado = False
         intentos = 0
-        max_intentos = 3  # Permite re-evaluar inmediatamente tras la descarga
+        max_intentos = 3
         
         while not aprobado and intentos < max_intentos:
             intentos += 1
             if intentos > 1:
                 print(f"\n[RE-EXAMEN] 🔄 Evaluando nuevamente la VENTANA #{i} tras reentrenamiento (Intento {intentos})...")
             
-            # Registrar timestamp exacto antes de evaluar por si se envía alerta
             timestamp_evaluacion = datetime.now(timezone.utc).timestamp()
             
-            # Rendir examen
+            # Rendir examen sobre el lote de producción
             registro = evaluar_lote_produccion(ruta_lote)
             
             f1 = registro["f1_score_fraude"]
@@ -150,7 +150,7 @@ def ejecutar_simulacion_stream():
                         ejecutar_git_pull_automatico()
                         print("[STREAM] 🔄 Modelo actualizado descargado. Procediendo a RE-EVALUAR el mismo lote...")
                     else:
-                        print("[STREAM] ⚠️ GitHub Actions no logró generar un modelo superior o falló. Manteniendo modelo actual.")
+                        print("[STREAM] ⚠️ GitHub Actions no logró generar un modelo superior. Manteniendo modelo actual.")
                         break
                 else:
                     print("[STREAM] En periodo de Cooldown FinOps o Nube Ocupada. No se enviará evento duplicado.")
