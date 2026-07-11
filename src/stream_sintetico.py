@@ -4,9 +4,10 @@ import time
 import requests
 import subprocess
 import pandas as pd
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
-# 🔹 CLAVE: Asegurar la ruta raíz del proyecto ANTES de importar módulos de src/
+# Asegurar la ruta raíz del proyecto
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from src.generate_synthetic import generar_lote_sintetico
@@ -14,7 +15,11 @@ from src.monitor import evaluar_lote_produccion, obtener_huella_modelo
 
 load_dotenv()
 
-def esperar_github_actions_dinamico(timeout_segundos=300, intervalo_poll=10):
+def esperar_github_actions_dinamico(timestamp_disparo, timeout_segundos=300, intervalo_poll=8):
+    """
+    Monitorea dinámicamente la API de GitHub Actions filtrando únicamente
+    por ejecuciones creadas posterior al timestamp_disparo de la alerta.
+    """
     token = os.getenv("GITHUB_TOKEN")
     repo = os.getenv("GITHUB_REPOSITORY", "iarajjjrl/Version2-ML-Tesis")
     
@@ -28,7 +33,7 @@ def esperar_github_actions_dinamico(timeout_segundos=300, intervalo_poll=10):
         "Accept": "application/vnd.github.v3+json"
     }
     
-    print("\n[AUTO-POLL] Conectando con GitHub API para monitorear el reentrenamiento...")
+    print("\n[AUTO-POLL] ⏳ Conectando con GitHub API. Esperando registro de la nueva ejecución en la nube...")
     tiempo_inicio = time.time()
     
     while time.time() - tiempo_inicio < timeout_segundos:
@@ -37,19 +42,37 @@ def esperar_github_actions_dinamico(timeout_segundos=300, intervalo_poll=10):
             if response.status_code == 200:
                 data = response.json()
                 runs = data.get("workflow_runs", [])
-                if runs:
-                    latest_run = runs[0]
+                
+                # Filtrar solo ejecuciones creadas DESPUÉS del disparo (con 10s de margen por reloj)
+                runs_nuevos = []
+                for r in runs:
+                    created_at_str = r.get("created_at")
+                    if created_at_str:
+                        dt_created = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+                        ts_created = dt_created.timestamp()
+                        if ts_created >= (timestamp_disparo - 10):
+                            runs_nuevos.append(r)
+                
+                if runs_nuevos:
+                    latest_run = runs_nuevos[0]
                     status = latest_run.get("status")
                     conclusion = latest_run.get("conclusion")
                     run_id = latest_run.get("id")
                     
                     if status in ["queued", "in_progress"]:
-                        print(f"[AUTO-POLL] El pipeline en la nube está: {status.upper()}... (Run ID: {run_id})")
+                        print(f"[AUTO-POLL] 🚀 Trabajo activo en la nube: {status.upper()}... (Run ID: {run_id})")
                     elif status == "completed":
-                        print(f"[AUTO-POLL] 🏁 ¡GitHub Actions ha terminado! Conclusión: {conclusion.upper()}")
-                        return conclusion == "success"
+                        print(f"[AUTO-POLL] 🏁 ¡GitHub Actions ha finalizado! Conclusión: {conclusion.upper()} (Run ID: {run_id})")
+                        if conclusion == "success":
+                            print("[AUTO-POLL] ⏸️ Pausa de 5 segundos para consolidar la actualización en GitHub...")
+                            time.sleep(5)
+                            return True
+                        else:
+                            return False
+                else:
+                    print("[AUTO-POLL] ⏳ Aguardando a que la API de GitHub registre el evento...")
         except Exception as e:
-            print(f"[AUTO-POLL] Error de conexión: {e}")
+            print(f"[AUTO-POLL] Error de conexión con GitHub API: {e}")
             
         time.sleep(intervalo_poll)
         
@@ -58,7 +81,7 @@ def esperar_github_actions_dinamico(timeout_segundos=300, intervalo_poll=10):
 
 def ejecutar_git_pull_automatico():
     try:
-        print("[AUTO-PULL] Ejecutando 'git pull' para descargar el nuevo modelo de producción...")
+        print("[AUTO-PULL] 📥 Ejecutando 'git pull' para descargar el nuevo modelo de producción...")
         resultado = subprocess.run(["git", "pull", "origin", "main"], capture_output=True, text=True)
         print(resultado.stdout)
         return True
@@ -95,12 +118,15 @@ def ejecutar_simulacion_stream():
         # 2. BUCLE DE EXAMEN Y RE-EXAMEN (MLOps Loop)
         aprobado = False
         intentos = 0
-        max_intentos = 2  # Máximo 1 reentrenamiento por lote
+        max_intentos = 3  # Permite re-evaluar inmediatamente tras la descarga
         
         while not aprobado and intentos < max_intentos:
             intentos += 1
             if intentos > 1:
                 print(f"\n[RE-EXAMEN] 🔄 Evaluando nuevamente la VENTANA #{i} tras reentrenamiento (Intento {intentos})...")
+            
+            # Registrar timestamp exacto antes de evaluar por si se envía alerta
+            timestamp_evaluacion = datetime.now(timezone.utc).timestamp()
             
             # Rendir examen
             registro = evaluar_lote_produccion(ruta_lote)
@@ -118,16 +144,16 @@ def ejecutar_simulacion_stream():
                 
                 if alerta:
                     print("[STREAM] Alerta enviada a la nube. Esperando solución de GitHub Actions...")
-                    exito_nube = esperar_github_actions_dinamico()
+                    exito_nube = esperar_github_actions_dinamico(timestamp_disparo=timestamp_evaluacion)
                     
                     if exito_nube:
                         ejecutar_git_pull_automatico()
                         print("[STREAM] 🔄 Modelo actualizado descargado. Procediendo a RE-EVALUAR el mismo lote...")
                     else:
-                        print("[STREAM] ⚠️ GitHub Actions no logró generar un modelo superior. Manteniendo modelo actual.")
-                        break  # Salir del bucle para continuar con el siguiente lote por resiliencia
+                        print("[STREAM] ⚠️ GitHub Actions no logró generar un modelo superior o falló. Manteniendo modelo actual.")
+                        break
                 else:
-                    print("[STREAM] En periodo de Cooldown FinOps. No se enviará evento duplicado.")
+                    print("[STREAM] En periodo de Cooldown FinOps o Nube Ocupada. No se enviará evento duplicado.")
                     break
 
 if __name__ == "__main__":

@@ -49,11 +49,9 @@ def generar_lote_sintetico(
     
     for col in cols_enteras:
         if col in df_sintetico.columns:
-            # Redondear y truncar a valores enteros no negativos
             df_sintetico[col] = np.clip(np.round(df_sintetico[col]), a_min=0, a_max=None).astype(int)
             
     if 'TransactionAmt' in df_sintetico.columns:
-        # Asegurar que el monto de la transacción sea estrictamente mayor o igual a 0.01
         df_sintetico['TransactionAmt'] = np.clip(df_sintetico['TransactionAmt'], a_min=0.01, a_max=None)
     
     # 5. Inyección Opcional de Data Drift en variables de negocio
@@ -62,7 +60,7 @@ def generar_lote_sintetico(
         df_sintetico['TransactionAmt'] = df_sintetico['TransactionAmt'] * np.random.uniform(2.5, 4.0, size=len(df_sintetico))
         df_sintetico['card1'] = (df_sintetico['card1'] * np.random.uniform(1.5, 3.0, size=len(df_sintetico))).astype(int)
         df_sintetico['C1'] = (df_sintetico['C1'] * np.random.uniform(2.0, 3.5, size=len(df_sintetico))).astype(int)
-        df_sintetico['C3'] = (df_sintetico['C13'] * np.random.uniform(2.0, 3.5, size=len(df_sintetico))).astype(int)
+        df_sintetico['C13'] = (df_sintetico['C13'] * np.random.uniform(2.0, 3.5, size=len(df_sintetico))).astype(int)
         
     os.makedirs(os.path.dirname(ruta_salida) or ".", exist_ok=True)
     df_sintetico.to_csv(ruta_salida, index=False)
