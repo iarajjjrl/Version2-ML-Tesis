@@ -111,7 +111,7 @@ def hay_reentrenamiento_activo_en_nube():
 
 def disparar_reentrenamiento_github():
     if hay_reentrenamiento_activo_en_nube():
-        print("[NUBE OCUPADA] ⏳ GitHub Actions ya tiene una ejecución activa. Omitiendo disparo duplicado.")
+        print("[NUBE OCUPADA]  GitHub Actions ya tiene una ejecución activa. Omitiendo disparo duplicado.")
         return True
 
     token = os.getenv("GITHUB_TOKEN")
@@ -160,7 +160,7 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
     alerta_disparada = False
     
     print(f"\n[INFO] Evaluando telemetría sobre el lote: {ruta_lote_csv}")
-    print(f"[MODELO ACTIVO] 🤖 {nombre_algoritmo} | Umbral Calibrado: {umbral_calibrado:.2f} | SHA256: [{hash_modelo}] | Compilado: {fecha_mod_modelo}")
+    print(f"[MODELO ACTIVO]  {nombre_algoritmo} | Umbral Calibrado: {umbral_calibrado:.2f} | SHA256: [{hash_modelo}] | Compilado: {fecha_mod_modelo}")
     print(f"[RESULTADO] F1-Score (Fraude): {f1:.4f} | Umbral Mínimo: {umbral_f1}")
     print(f"[RESULTADO] Population Stability Index (PSI): {psi_valor:.4f} | Umbral PSI: {umbral_psi}")
     print(f"[RESULTADO] Drift Detection Time (TTD): {ttd_segundos:.6f} segundos")
@@ -169,7 +169,7 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
     hay_drift = (f1 < umbral_f1)
     
     if hay_drift:
-        print(f"[ALERTA] ⚠️ Degradación detectada (F1: {f1:.4f} < {umbral_f1}).")
+        print(f"[ALERTA]  Degradación detectada (F1: {f1:.4f} < {umbral_f1}).")
         
         en_cooldown = consultar_ultimo_cooldown_alerta()
         if en_cooldown:

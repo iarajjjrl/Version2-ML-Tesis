@@ -23,13 +23,13 @@ def cargar_datos_entrenamiento_consolidados(ruta_base="data/datos_entrenamiento.
     
     # Solo incorporar el lote de drift si se pasa explícitamente durante un evento de reentrenamiento
     if ruta_lote_drift and os.path.exists(ruta_lote_drift):
-        print(f"[FEEDBACK LOOP MLOPS] 🔄 Evento de reentrenamiento activo: Incorporando '{ruta_lote_drift}' al dataset...")
+        print(f"[FEEDBACK LOOP MLOPS]  Evento de reentrenamiento activo: Incorporando '{ruta_lote_drift}' al dataset...")
         df_drift = pd.read_csv(ruta_lote_drift)
         df_base = pd.concat([df_base, df_drift], ignore_index=True)
         # Guardar la versión consolidada en el disco para el commit de GitHub
         df_base.to_csv(ruta_base, index=False)
     else:
-        print(f"[ENTRENAMIENTO BASE] 🟢 Cargando dataset de entrenamiento limpio ({len(df_base)} filas). Sin contaminación previa.")
+        print(f"[ENTRENAMIENTO BASE]  Cargando dataset de entrenamiento limpio ({len(df_base)} filas). Sin contaminación previa.")
         
     return df_base
 
@@ -129,7 +129,7 @@ def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv"
     print("  TABLA COMPARATIVA DE RENDIMIENTO (FEEDBACK LOOP)")
     print("="*60)
     for nombre, _, f1_val, th_val in modelos:
-        marca = "🏆 GANADOR" if nombre == nombre_ganador else "  "
+        marca = " GANADOR" if nombre == nombre_ganador else "  "
         print(f"  [{marca}] {nombre:<30} | F1-Score: {f1_val:.4f} | Umbral: {th_val:.2f}")
     print("="*60)
     
@@ -138,7 +138,7 @@ def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv"
     # ---------------------------------------------------------
     print(f"\n[GUARDRAIL] Evaluando regla de calidad (F1 >= {umbral_guardrail})...")
     if f1_ganador >= umbral_guardrail:
-        print(f"[GUARDRAIL APROBADO] ✅ El modelo '{nombre_ganador}' alcanzó un F1-Score de {f1_ganador:.4f}.")
+        print(f"[GUARDRAIL APROBADO] El modelo '{nombre_ganador}' alcanzó un F1-Score de {f1_ganador:.4f}.")
         
         modelo_ganador.fit(X, y)
         artefacto_final = ModelWithThreshold(
@@ -152,7 +152,7 @@ def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv"
         joblib.dump(artefacto_final, ruta_modelo, compress=3)
         print(f"[ARTEFACTO] Modelo óptimo guardado exitosamente en '{ruta_modelo}'.")
     else:
-        print(f"[GUARDRAIL RECHAZADO] ❌ Ningún modelo superó el umbral de {umbral_guardrail}. F1 máximo: {f1_ganador:.4f}.")
+        print(f"[GUARDRAIL RECHAZADO] Ningún modelo superó el umbral de {umbral_guardrail}. F1 máximo: {f1_ganador:.4f}.")
         raise ValueError(f"Reentrenamiento abortado por Guardrail (F1 {f1_ganador:.4f} < {umbral_guardrail})")
 
 if __name__ == "__main__":

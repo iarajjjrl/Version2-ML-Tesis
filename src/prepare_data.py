@@ -102,7 +102,7 @@ def preparar_ieee_fraud(ruta_trans="train_transaction.csv", ruta_id="train_ident
     X_lote2_drift.assign(Class=y_lote2).to_csv("data/prod_lote2_drift.csv", index=False)
     X_lote1.assign(Class=y_lote1).to_csv("data/prod_lote3_post_retrain.csv", index=False)
     
-    print("[INFO] ✅ Lotes enriquecidos generados exitosamente en 'data/'.")
+    print("[INFO]  Lotes enriquecidos generados exitosamente en 'data/'.")
 
 if __name__ == "__main__":
     preparar_ieee_fraud()
