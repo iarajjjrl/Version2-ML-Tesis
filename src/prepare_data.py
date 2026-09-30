@@ -1,10 +1,76 @@
 import pandas as pd
 import numpy as np
 import os
+import joblib
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
+from sklearn.base import BaseEstimator, TransformerMixin
 
-def aplicar_feature_engineering_industrial(df):
+
+class FraudFeaturePreprocessor(BaseEstimator, TransformerMixin):
+    """Codifica categorías y crea features usando estadísticas aprendidas en fit."""
+
+    def __init__(self, amount_col="TransactionAmt", card_col="card1"):
+        self.amount_col = amount_col
+        self.card_col = card_col
+
+    def fit(self, X, y=None):
+        X = X.copy()
+        self.categorical_maps_ = {}
+        for col in X.columns:
+            if not pd.api.types.is_numeric_dtype(X[col]):
+                values = X[col].fillna("UNKNOWN").astype(str)
+                self.categorical_maps_[col] = {
+                    value: idx for idx, value in enumerate(pd.unique(values))
+                }
+
+        encoded = self._encode_and_fill(X)
+        if self.card_col in encoded.columns:
+            self.card1_counts_ = encoded[self.card_col].value_counts().to_dict()
+            if self.amount_col in encoded.columns:
+                self.card1_amount_means_ = encoded.groupby(self.card_col)[self.amount_col].mean().to_dict()
+            else:
+                self.card1_amount_means_ = {}
+        else:
+            self.card1_counts_ = {}
+            self.card1_amount_means_ = {}
+        self.feature_names_in_ = np.asarray(X.columns, dtype=object)
+        return self
+
+    def _encode_and_fill(self, X):
+        result = X.copy()
+        for col in result.columns:
+            if col in getattr(self, "categorical_maps_", {}):
+                result[col] = (result[col].fillna("UNKNOWN").astype(str)
+                               .map(self.categorical_maps_[col]).fillna(-1))
+            else:
+                result[col] = pd.to_numeric(result[col], errors="coerce").fillna(-999)
+        return result
+
+    def transform(self, X):
+        if not hasattr(self, "categorical_maps_"):
+            raise RuntimeError("El preprocesador debe ajustarse con fit antes de transform.")
+        result = self._encode_and_fill(X)
+        if self.amount_col in result.columns:
+            result[f"{self.amount_col}_log"] = np.log1p(result[self.amount_col].clip(lower=0))
+        if self.card_col in result.columns:
+            result["card1_count"] = result[self.card_col].map(self.card1_counts_).fillna(1)
+            means = result[self.card_col].map(self.card1_amount_means_)
+            if self.amount_col in result.columns:
+                result["amt_to_mean_card1"] = (result[self.amount_col] / (means + 1e-5)).replace(
+                    [np.inf, -np.inf], np.nan
+                ).fillna(0).round(4)
+        c_cols = [c for c in ["C1", "C2", "C5", "C6", "C11", "C13"] if c in result.columns]
+        if c_cols:
+            result["C_sum_velocity"] = result[c_cols].sum(axis=1)
+        return result
+
+
+def transformar_lote_produccion(df, ruta_preprocessor="models/preprocessor.pkl"):
+    """Transforma un lote nuevo con el estado aprendido durante el entrenamiento."""
+    preprocessor = joblib.load(ruta_preprocessor)
+    return preprocessor.transform(df)
+
+def aplicar_feature_engineering_industrial(df, preprocessor=None):
     """
     Aplica técnicas de Feature Engineering de nivel industrial para detección de fraude:
     1. Frecuencia de uso de tarjetas (Velocity Encoding).
@@ -12,28 +78,9 @@ def aplicar_feature_engineering_industrial(df):
     3. Transformaciones logarítmicas de montos.
     4. Agregados de contadores de actividad (C-scores).
     """
-    print("[FEATURE ENGINEERING] Generando variables derivadas de alta discriminación...")
-    df_feat = df.copy()
-    
-    # 1. Transformación Logarítmica del Monto (Suaviza outliers extremos)
-    if 'TransactionAmt' in df_feat.columns:
-        df_feat['TransactionAmt_log'] = np.log1p(df_feat['TransactionAmt'])
-    
-    # 2. Velocity Encoding: Frecuencia de aparición de la tarjeta (card1)
-    if 'card1' in df_feat.columns:
-        card1_counts = df_feat['card1'].value_counts()
-        df_feat['card1_count'] = df_feat['card1'].map(card1_counts).fillna(1)
-        
-        # 3. Ratio del Monto vs Promedio de esa Tarjeta
-        card1_amt_mean = df_feat.groupby('card1')['TransactionAmt'].transform('mean')
-        df_feat['amt_to_mean_card1'] = (df_feat['TransactionAmt'] / (card1_amt_mean + 1e-5)).round(4)
-    
-    # 4. Agregado de Velocidad Transaccional (Suma de contadores C1-C13)
-    c_cols = [c for c in ['C1', 'C2', 'C5', 'C6', 'C11', 'C13'] if c in df_feat.columns]
-    if c_cols:
-        df_feat['C_sum_velocity'] = df_feat[c_cols].sum(axis=1)
-        
-    return df_feat
+    if preprocessor is None:
+        raise ValueError("Pasa un FraudFeaturePreprocessor ajustado para evitar fuga de datos.")
+    return preprocessor.transform(df)
 
 def preparar_ieee_fraud(ruta_trans="train_transaction.csv", ruta_id="train_identity.csv"):
     print("[INFO] Cargando datasets originales de IEEE-CIS...")
@@ -56,38 +103,30 @@ def preparar_ieee_fraud(ruta_trans="train_transaction.csv", ruta_id="train_ident
     cols_existentes = [c for c in cols_negocio if c in df.columns]
     df_filtrado = df[cols_existentes + ['isFraud']].copy()
     
-    print("[INFO] Codificando variables categóricas...")
-    for col in df_filtrado.columns:
-        if col == 'isFraud':
-            continue
-        if not pd.api.types.is_numeric_dtype(df_filtrado[col]):
-            df_filtrado[col] = df_filtrado[col].fillna('UNKNOWN').astype(str)
-            le = LabelEncoder()
-            df_filtrado[col] = le.fit_transform(df_filtrado[col])
-        else:
-            df_filtrado[col] = df_filtrado[col].fillna(-999)
-            
     df_filtrado = df_filtrado.rename(columns={'isFraud': 'Class'})
-    
-    # 🚀 APLICACIÓN DE FEATURE ENGINEERING
-    df_enriquecido = aplicar_feature_engineering_industrial(df_filtrado)
-    
-    # Muestreo estratificado del 30%
-    X = df_enriquecido.drop(columns=['Class'])
-    y = df_enriquecido['Class']
+    X = df_filtrado.drop(columns=['Class'])
+    y = df_filtrado['Class']
     
     X_sample, _, y_sample, _ = train_test_split(
         X, y, train_size=0.30, random_state=42, stratify=y
     )
     
-    X_train, X_prod, y_train, y_prod = train_test_split(
+    X_train_raw, X_prod_raw, y_train, y_prod = train_test_split(
         X_sample, y_sample, test_size=0.40, random_state=42, stratify=y_sample
     )
+
+    # Fit solo con entrenamiento; toda estadística derivada queda congelada para producción.
+    preprocessor = FraudFeaturePreprocessor().fit(X_train_raw)
+    os.makedirs("models", exist_ok=True)
+    joblib.dump(preprocessor, "models/preprocessor.pkl")
+    X_train = preprocessor.transform(X_train_raw)
+    X_prod = preprocessor.transform(X_prod_raw)
     
     # Crear Lotes Reales de Producción
-    X_lote1, X_lote2, y_lote1, y_lote2 = train_test_split(
+    X_lote1_raw, X_lote2_raw, y_lote1, y_lote2 = train_test_split(
         X_prod, y_prod, test_size=0.50, random_state=42, stratify=y_prod
     )
+    X_lote1, X_lote2 = X_lote1_raw.copy(), X_lote2_raw.copy()
     
     # Inyectar Data Drift en Lote 2 (Simulación de Ataque Masivo)
     X_lote2_drift = X_lote2.copy()

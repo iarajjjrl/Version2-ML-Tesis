@@ -1,19 +1,24 @@
-# Archivos de credenciales y entorno
+# 1. Archivos de credenciales, entorno y editores
 .env
 venv/
 __pycache__/
-Test_Variables.py
+**/__pycache__/
+.vscode/
 
-# Archivos pesados originales y de salida local
+# 2. Archivos pesados originales (Datos Crudos)
 creditcard.csv
-logs/
-
-# Ignorar la carpeta models EXCEPTO el modelo vigente
-models/*
-!models/modelo_vigente.pkl
-
 train_identity.csv
-
 train_transaction.csv
 
+# 3. Telemetría local y temporales
+logs/
+catboost_info/
 repomix-output.xml
+Test_Variables.py
+
+# 4. GOBERNANZA DE ARTEFACTOS (Carpeta models/)
+# Ignorar todos los modelos entrenados localmente para no saturar GitHub
+models/*.pkl
+# PERMITIR el preprocesador (crítico para evitar Data Leakage)
+!models/preprocessor.pkl
+# Nota: models/active_model.json se subirá normalmente sin restricciones.

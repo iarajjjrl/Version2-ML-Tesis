@@ -1,0 +1,6 @@
+{
+  "modelo_activo": "models/modelo_xgboost_20260930T084108.298246Z_d5dbdf1f.pkl",
+  "f1_calibrado": 0.629814,
+  "umbral": 0.6,
+  "despliegue": "2026-09-30T08:41:08.373373+00:00"
+}
