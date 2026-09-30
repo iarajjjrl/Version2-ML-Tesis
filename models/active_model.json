@@ -1,6 +1,6 @@
 {
-  "modelo_activo": "models/modelo_xgboost_20260930T084108.298246Z_d5dbdf1f.pkl",
-  "f1_calibrado": 0.629814,
-  "umbral": 0.6,
-  "despliegue": "2026-09-30T08:41:08.373373+00:00"
+  "modelo_activo": "models/modelo_randomforest_20260930T093917.451469Z_83a6e8bd.pkl",
+  "f1_calibrado": 0.555916,
+  "umbral": 0.39,
+  "despliegue": "2026-09-30T09:39:18.314717+00:00"
 }
