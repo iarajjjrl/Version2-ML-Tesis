@@ -1,166 +1,252 @@
-import os
-import sys
 import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+from datetime import datetime, timezone
+
 import joblib
-import pandas as pd
 import numpy as np
 import optuna
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import f1_score
+import pandas as pd
+from catboost import CatBoostClassifier
+from lightgbm import LGBMClassifier
+from xgboost import XGBClassifier
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from sklearn.metrics import f1_score
+from sklearn.model_selection import train_test_split
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
 from src.monitor import ModelWithThreshold
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-def cargar_datos_entrenamiento_consolidados(ruta_base="data/datos_entrenamiento.csv", ruta_lote_drift=None):
+
+def cargar_datos_entrenamiento_consolidados(
+    ruta_base="data/datos_entrenamiento.csv", ruta_lote_drift=None
+):
     if not os.path.exists(ruta_base):
         raise FileNotFoundError(f"No se encontró el archivo de entrenamiento en '{ruta_base}'")
-        
+
     df_base = pd.read_csv(ruta_base)
-    
-    # Solo incorporar el lote de drift si se pasa explícitamente durante un evento de reentrenamiento
     if ruta_lote_drift and os.path.exists(ruta_lote_drift):
-        print(f"[FEEDBACK LOOP MLOPS]  Evento de reentrenamiento activo: Incorporando '{ruta_lote_drift}' al dataset...")
+        print(f"[FEEDBACK LOOP MLOPS] Incorporando lote '{ruta_lote_drift}'...")
         df_drift = pd.read_csv(ruta_lote_drift)
         df_base = pd.concat([df_base, df_drift], ignore_index=True)
-        # Guardar la versión consolidada en el disco para el commit de GitHub
         df_base.to_csv(ruta_base, index=False)
     else:
-        print(f"[ENTRENAMIENTO BASE]  Cargando dataset de entrenamiento limpio ({len(df_base)} filas). Sin contaminación previa.")
-        
+        print(f"[ENTRENAMIENTO BASE] Dataset cargado ({len(df_base)} filas).")
     return df_base
 
+
 def encontrar_umbral_optimo(modelo, X_val, y_val):
-    probs = modelo.predict_proba(X_val)[:, 1]
-    umbrales = np.linspace(0.15, 0.85, 71)
-    mejor_f1 = 0.0
-    mejor_umbral = 0.50
-    
-    for th in umbrales:
-        preds = (probs >= th).astype(int)
-        score = f1_score(y_val, preds, pos_label=1, zero_division=0)
+    probabilidades = modelo.predict_proba(X_val)[:, 1]
+    mejor_f1, mejor_umbral = 0.0, 0.50
+    for umbral in np.linspace(0.15, 0.85, 71):
+        predicciones = (probabilidades >= umbral).astype(int)
+        score = f1_score(y_val, predicciones, pos_label=1, zero_division=0)
         if score > mejor_f1:
-            mejor_f1 = score
-            mejor_umbral = th
-            
+            mejor_f1, mejor_umbral = score, float(umbral)
     return mejor_f1, mejor_umbral
 
-def evaluar_y_seleccionar_mejor_modelo(ruta_train="data/datos_entrenamiento.csv", ruta_lote_drift=None, umbral_guardrail=0.50, n_trials=5):
-    print("="*60)
-    print("  AUTOTUNE MLOPS: BÚSQUEDA BAYESIANA ÁGIL (FEEDBACK LOOP)")
-    print("="*60)
-    
-    df = cargar_datos_entrenamiento_consolidados(ruta_train, ruta_lote_drift=ruta_lote_drift)
-    X = df.drop(columns=['Class'])
-    y = df['Class']
-    
+
+def _hash_archivo(ruta, longitud=8):
+    hasher = hashlib.sha256()
+    with open(ruta, "rb") as archivo:
+        for bloque in iter(lambda: archivo.read(1024 * 1024), b""):
+            hasher.update(bloque)
+    return hasher.hexdigest()[:longitud]
+
+
+def _guardar_artefacto_versionado(artefacto, nombre_modelo, f1, umbral, directorio="models"):
+    os.makedirs(directorio, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    slug = re.sub(r"[^a-z0-9]+", "_", nombre_modelo.lower()).strip("_")
+    temporal = os.path.join(directorio, f".{slug}_{timestamp}.tmp.pkl")
+
+    try:
+        joblib.dump(artefacto, temporal, compress=3)
+        hash_corto = _hash_archivo(temporal)
+        nombre_archivo = f"modelo_{slug}_{timestamp}_{hash_corto}.pkl"
+        ruta_final = os.path.join(directorio, nombre_archivo)
+        if os.path.exists(ruta_final):
+            raise FileExistsError(f"El artefacto versionado ya existe: '{ruta_final}'")
+        os.replace(temporal, ruta_final)
+
+        manifiesto = {
+            "modelo_activo": ruta_final.replace(os.sep, "/"),
+            "f1_calibrado": round(float(f1), 6),
+            "umbral": round(float(umbral), 6),
+            "despliegue": datetime.now(timezone.utc).isoformat(),
+        }
+        ruta_manifiesto = os.path.join(directorio, "active_model.json")
+        temporal_json = ruta_manifiesto + ".tmp"
+        with open(temporal_json, "w", encoding="utf-8") as archivo:
+            json.dump(manifiesto, archivo, indent=2, ensure_ascii=False)
+            archivo.write("\n")
+        os.replace(temporal_json, ruta_manifiesto)
+        return manifiesto
+    finally:
+        if os.path.exists(temporal):
+            os.remove(temporal)
+
+
+def evaluar_y_seleccionar_mejor_modelo(
+    ruta_train="data/datos_entrenamiento.csv",
+    ruta_lote_drift=None,
+    umbral_guardrail=0.50,
+    n_trials=5,
+):
+    print("=" * 72)
+    print("AUTOML MLOPS: COMPETENCIA DE CINCO MODELOS CON OPTUNA")
+    print("=" * 72)
+
+    df = cargar_datos_entrenamiento_consolidados(ruta_train, ruta_lote_drift)
+    if "Class" not in df.columns:
+        raise ValueError("El dataset debe contener la columna objetivo 'Class'.")
+    X = df.drop(columns=["Class"])
+    y = df["Class"]
+    if y.nunique() != 2:
+        raise ValueError("La columna 'Class' debe contener exactamente dos clases.")
+
     X_train, X_val, y_train, y_val = train_test_split(
         X, y, test_size=0.25, random_state=42, stratify=y
     )
+    positivos = int((y_train == 1).sum())
+    negativos = int((y_train == 0).sum())
+    if positivos == 0:
+        raise ValueError("No hay ejemplos positivos en el conjunto de entrenamiento.")
+    scale_pos_weight = negativos / positivos
 
-    # ---------------------------------------------------------
-    # OPTUNA TRIAL 1: HistGradientBoosting
-    # ---------------------------------------------------------
-    print(f"\n[OPTUNA 1/2] Optimizando HistGradientBoosting ({n_trials} trials)...")
-    
-    def objective_hgb(trial):
-        lr = trial.suggest_float("learning_rate", 0.03, 0.15, log=True)
-        max_iter = trial.suggest_int("max_iter", 100, 250)
-        max_depth = trial.suggest_int("max_depth", 6, 14)
-        
-        model = HistGradientBoostingClassifier(
-            learning_rate=lr, max_iter=max_iter, max_depth=max_depth,
-            class_weight='balanced', random_state=42
+    def objective_xgb(trial):
+        params = {
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "max_depth": trial.suggest_int("max_depth", 3, 10),
+            "n_estimators": trial.suggest_int("n_estimators", 80, 300),
+        }
+        model = XGBClassifier(
+            **params, scale_pos_weight=scale_pos_weight, random_state=42,
+            eval_metric="logloss", n_jobs=-1,
         )
         model.fit(X_train, y_train)
-        f1, _ = encontrar_umbral_optimo(model, X_val, y_val)
-        return f1
+        return encontrar_umbral_optimo(model, X_val, y_val)[0]
 
-    study_hgb = optuna.create_study(direction="maximize")
-    study_hgb.optimize(objective_hgb, n_trials=n_trials)
-    
-    best_params_hgb = study_hgb.best_params
-    best_hgb = HistGradientBoostingClassifier(**best_params_hgb, class_weight='balanced', random_state=42)
-    best_hgb.fit(X_train, y_train)
-    f1_hgb, th_hgb = encontrar_umbral_optimo(best_hgb, X_val, y_val)
-    print(f"  -> Mejor F1-Score HistGradientBoosting: {f1_hgb:.4f} (Umbral: {th_hgb:.2f})")
+    def objective_lgbm(trial):
+        params = {
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "max_depth": trial.suggest_int("max_depth", 3, 12),
+            "n_estimators": trial.suggest_int("n_estimators", 80, 300),
+        }
+        model = LGBMClassifier(
+            **params, class_weight="balanced", random_state=42, n_jobs=-1, verbosity=-1,
+        )
+        model.fit(X_train, y_train)
+        return encontrar_umbral_optimo(model, X_val, y_val)[0]
 
-    # ---------------------------------------------------------
-    # OPTUNA TRIAL 2: RandomForest
-    # ---------------------------------------------------------
-    print(f"\n[OPTUNA 2/2] Optimizando RandomForest ({n_trials} trials)...")
-    
+    def objective_catboost(trial):
+        params = {
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "depth": trial.suggest_int("depth", 4, 10),
+            "iterations": trial.suggest_int("iterations", 80, 300),
+        }
+        model = CatBoostClassifier(
+            **params, auto_class_weights="Balanced", verbose=0, random_state=42,
+        )
+        model.fit(X_train, y_train)
+        return encontrar_umbral_optimo(model, X_val, y_val)[0]
+
     def objective_rf(trial):
-        n_est = trial.suggest_int("n_estimators", 60, 120)
-        max_depth = trial.suggest_int("max_depth", 8, 15)
-        
+        params = {
+            "max_depth": trial.suggest_int("max_depth", 5, 24),
+            "n_estimators": trial.suggest_int("n_estimators", 80, 300),
+        }
         model = RandomForestClassifier(
-            n_estimators=n_est, max_depth=max_depth,
-            class_weight='balanced_subsample', n_jobs=-1, random_state=42
+            **params, class_weight="balanced_subsample", n_jobs=-1, random_state=42,
         )
         model.fit(X_train, y_train)
-        f1, _ = encontrar_umbral_optimo(model, X_val, y_val)
-        return f1
+        return encontrar_umbral_optimo(model, X_val, y_val)[0]
 
-    study_rf = optuna.create_study(direction="maximize")
-    study_rf.optimize(objective_rf, n_trials=n_trials)
-    
-    best_params_rf = study_rf.best_params
-    best_rf = RandomForestClassifier(**best_params_rf, class_weight='balanced_subsample', n_jobs=-1, random_state=42)
-    best_rf.fit(X_train, y_train)
-    f1_rf, th_rf = encontrar_umbral_optimo(best_rf, X_val, y_val)
-    print(f"  -> Mejor F1-Score RandomForest: {f1_rf:.4f} (Umbral: {th_rf:.2f})")
-
-    # ---------------------------------------------------------
-    # COMPARATIVA Y SELECCIÓN DEL MODELO GANADOR
-    # ---------------------------------------------------------
-    modelos = [
-        ("HistGradientBoosting", best_hgb, f1_hgb, th_hgb),
-        ("RandomForest", best_rf, f1_rf, th_rf)
-    ]
-    
-    modelos.sort(key=lambda x: x[2], reverse=True)
-    nombre_ganador, modelo_ganador, f1_ganador, th_ganador = modelos[0]
-    
-    print("\n" + "="*60)
-    print("  TABLA COMPARATIVA DE RENDIMIENTO (FEEDBACK LOOP)")
-    print("="*60)
-    for nombre, _, f1_val, th_val in modelos:
-        marca = " GANADOR" if nombre == nombre_ganador else "  "
-        print(f"  [{marca}] {nombre:<30} | F1-Score: {f1_val:.4f} | Umbral: {th_val:.2f}")
-    print("="*60)
-    
-    # ---------------------------------------------------------
-    # EVALUACIÓN DEL GUARDRAIL DE GOBERNANZA
-    # ---------------------------------------------------------
-    print(f"\n[GUARDRAIL] Evaluando regla de calidad (F1 >= {umbral_guardrail})...")
-    if f1_ganador >= umbral_guardrail:
-        print(f"[GUARDRAIL APROBADO] El modelo '{nombre_ganador}' alcanzó un F1-Score de {f1_ganador:.4f}.")
-        
-        modelo_ganador.fit(X, y)
-        artefacto_final = ModelWithThreshold(
-            base_model=modelo_ganador, 
-            threshold=th_ganador, 
-            name=nombre_ganador
+    def objective_hist(trial):
+        params = {
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "max_iter": trial.suggest_int("max_iter", 80, 300),
+            "max_depth": trial.suggest_int("max_depth", 3, 15),
+        }
+        model = HistGradientBoostingClassifier(
+            **params, class_weight="balanced", random_state=42,
         )
-        
-        os.makedirs("models", exist_ok=True)
-        ruta_modelo = "models/modelo_vigente.pkl"
-        joblib.dump(artefacto_final, ruta_modelo, compress=3)
-        print(f"[ARTEFACTO] Modelo óptimo guardado exitosamente en '{ruta_modelo}'.")
-    else:
-        print(f"[GUARDRAIL RECHAZADO] Ningún modelo superó el umbral de {umbral_guardrail}. F1 máximo: {f1_ganador:.4f}.")
-        raise ValueError(f"Reentrenamiento abortado por Guardrail (F1 {f1_ganador:.4f} < {umbral_guardrail})")
+        model.fit(X_train, y_train)
+        return encontrar_umbral_optimo(model, X_val, y_val)[0]
+
+    competidores = [
+        ("XGBoost", XGBClassifier, objective_xgb,
+         lambda p: {**p, "scale_pos_weight": scale_pos_weight, "random_state": 42,
+                    "eval_metric": "logloss", "n_jobs": -1}),
+        ("LightGBM", LGBMClassifier, objective_lgbm,
+         lambda p: {**p, "class_weight": "balanced", "random_state": 42,
+                    "n_jobs": -1, "verbosity": -1}),
+        ("CatBoost", CatBoostClassifier, objective_catboost,
+         lambda p: {**p, "auto_class_weights": "Balanced", "verbose": 0, "random_state": 42}),
+        ("RandomForest", RandomForestClassifier, objective_rf,
+         lambda p: {**p, "class_weight": "balanced_subsample", "n_jobs": -1, "random_state": 42}),
+        ("HistGradientBoosting", HistGradientBoostingClassifier, objective_hist,
+         lambda p: {**p, "class_weight": "balanced", "random_state": 42}),
+    ]
+
+    resultados = []
+    for nombre, clase, objective, completar_params in competidores:
+        print(f"\n[OPTUNA] Optimizando {nombre} ({n_trials} trials)...")
+        study = optuna.create_study(direction="maximize")
+        study.optimize(objective, n_trials=n_trials)
+        modelo = clase(**completar_params(study.best_params))
+        modelo.fit(X_train, y_train)
+        f1, umbral = encontrar_umbral_optimo(modelo, X_val, y_val)
+        resultados.append((nombre, modelo, f1, umbral))
+        print(f"  -> F1-Score: {f1:.4f} | Umbral: {umbral:.2f}")
+
+    resultados.sort(key=lambda resultado: resultado[2], reverse=True)
+    nombre_ganador, modelo_ganador, f1_ganador, umbral_ganador = resultados[0]
+
+    print("\n" + "=" * 72)
+    print("TABLA COMPARATIVA DE MODELOS")
+    for nombre, _, f1, umbral in resultados:
+        marca = "GANADOR" if nombre == nombre_ganador else ""
+        print(f"[{marca:7}] {nombre:<22} F1={f1:.4f} | umbral={umbral:.2f}")
+    print("=" * 72)
+
+    print(f"\n[GUARDRAIL] F1 mínimo requerido: {umbral_guardrail:.4f}")
+    if f1_ganador < umbral_guardrail:
+        print(
+            "[INTERVENCIÓN MANUAL REQUERIDA] - "
+            "El modelo reentrenado no superó el Guardrail de calidad"
+        )
+        sys.exit(0)
+
+    print(f"[GUARDRAIL APROBADO] {nombre_ganador}: F1={f1_ganador:.4f}")
+    modelo_ganador.fit(X, y)
+    artefacto = ModelWithThreshold(
+        base_model=modelo_ganador,
+        threshold=umbral_ganador,
+        name=nombre_ganador,
+    )
+    manifiesto = _guardar_artefacto_versionado(
+        artefacto, nombre_ganador, f1_ganador, umbral_ganador
+    )
+    print(f"[DEPLOY] Artefacto versionado: {manifiesto['modelo_activo']}")
+    print("[DEPLOY] Manifiesto activo actualizado en models/active_model.json")
+    return manifiesto
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AutoTune MLOps")
-    parser.add_argument("--lote-drift", type=str, default=None, help="Ruta del lote con drift a incorporar durante un reentrenamiento")
+    parser = argparse.ArgumentParser(description="AutoML MLOps de cinco modelos")
+    parser.add_argument("--lote-drift", type=str, default=None)
+    parser.add_argument("--trials", type=int, default=5)
+    parser.add_argument("--umbral-guardrail", type=float, default=0.50)
     args = parser.parse_args()
-    
-    # Detecta si se pasa por argumento CLI o por variable de entorno de GitHub Actions
     lote_drift_env = os.getenv("LOTE_DRIFT_PATH", args.lote_drift)
-    
-    evaluar_y_seleccionar_mejor_modelo(ruta_lote_drift=lote_drift_env)
+    evaluar_y_seleccionar_mejor_modelo(
+        ruta_lote_drift=lote_drift_env,
+        umbral_guardrail=args.umbral_guardrail,
+        n_trials=args.trials,
+    )

@@ -1,6 +1,8 @@
 import os
 import time
 import hashlib
+import json
+import sys
 import numpy as np
 import pandas as pd
 import joblib
@@ -8,6 +10,13 @@ import requests
 from datetime import datetime, timedelta
 from sklearn.metrics import f1_score
 from dotenv import load_dotenv
+
+# Al ejecutar `python src/monitor.py`, Python prioriza `src/` en sys.path.
+# Los artefactos serializados referencian `src.monitor.ModelWithThreshold`,
+# por lo que el directorio raíz del proyecto debe estar disponible al cargarlos.
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 load_dotenv()
 
@@ -131,6 +140,15 @@ def disparar_reentrenamiento_github():
 
 def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pkl", ruta_base_train="data/datos_entrenamiento.csv", umbral_f1=0.50, umbral_psi=0.25):
     inicio_ttd = time.time()
+
+    # Si existe el manifiesto, usar el artefacto inmutable que declaró como activo.
+    ruta_manifiesto = "models/active_model.json"
+    if modelo_path == "models/modelo_vigente.pkl" and os.path.exists(ruta_manifiesto):
+        with open(ruta_manifiesto, "r", encoding="utf-8") as archivo:
+            manifiesto = json.load(archivo)
+        modelo_activo = manifiesto.get("modelo_activo")
+        if modelo_activo:
+            modelo_path = modelo_activo
     
     if not os.path.exists(modelo_path):
         raise FileNotFoundError(f"No se encontró el modelo en '{modelo_path}'")
@@ -150,11 +168,34 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
     y_pred = modelo.predict(X_test)
     f1 = f1_score(y_test, y_pred, pos_label=1, zero_division=0)
     
-    psi_valor = 0.0
+    variables_psi = [
+        "TransactionAmt",
+        "card1",
+        "C13",
+        "C_sum_velocity",
+        "amt_to_mean_card1",
+    ]
+    psi_por_variable = {}
+
     if os.path.exists(ruta_base_train):
         df_base = pd.read_csv(ruta_base_train)
-        if 'TransactionAmt' in df_base.columns and 'TransactionAmt' in X_test.columns:
-            psi_valor = calcular_psi(df_base['TransactionAmt'], X_test['TransactionAmt'])
+
+        for variable in variables_psi:
+            if variable not in df_base.columns or variable not in X_test.columns:
+                print(f"[PSI OMITIDO] Falta la variable '{variable}' en la base histórica o el lote.")
+                continue
+
+            psi_por_variable[variable] = calcular_psi(
+                df_base[variable],
+                X_test[variable],
+            )
+
+    psi_valor = max(psi_por_variable.values(), default=0.0)
+    variables_con_drift = [
+        variable
+        for variable, psi in psi_por_variable.items()
+        if psi > umbral_psi
+    ]
             
     ttd_segundos = time.time() - inicio_ttd
     alerta_disparada = False
@@ -166,11 +207,25 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
     print(f"[RESULTADO] Drift Detection Time (TTD): {ttd_segundos:.6f} segundos")
     
     # El modelo requiere reentrenamiento si su F1-Score cae por debajo de la regla de calidad (0.50)
-    hay_drift = (f1 < umbral_f1)
-    
+    for variable, psi in psi_por_variable.items():
+        print(
+            f"[RESULTADO] PSI {variable}: {psi:.4f} "
+            f"| Umbral PSI: {umbral_psi}"
+        )
+
+    hay_drift_f1 = f1 < umbral_f1
+    hay_drift_psi = bool(variables_con_drift)
+    hay_drift = hay_drift_f1 or hay_drift_psi
+
     if hay_drift:
-        print(f"[ALERTA]  Degradación detectada (F1: {f1:.4f} < {umbral_f1}).")
-        
+        if hay_drift_f1:
+            print(f"[ALERTA] Degradación detectada (F1: {f1:.4f} < {umbral_f1}).")
+        if hay_drift_psi:
+            print(
+                "[ALERTA] Drift estadístico detectado en: "
+                + ", ".join(variables_con_drift)
+            )
+
         en_cooldown = consultar_ultimo_cooldown_alerta()
         if en_cooldown:
             print("[COOLDOWN] Alerta previa enviada recientemente (< 180s). Omitiendo disparo duplicado a GitHub API.")
@@ -196,7 +251,9 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
         "f1_score_fraude": round(f1, 4),
         "psi_valor": round(psi_valor, 4),
         "ttd_segundos": round(ttd_segundos, 6),
-        "alerta_disparada": alerta_disparada
+        "alerta_disparada": alerta_disparada,
+        "psi_por_variable": json.dumps(psi_por_variable),
+        "variables_con_drift": json.dumps(variables_con_drift),
     }
     
     df_nuevo = pd.DataFrame([registro])

@@ -30,7 +30,7 @@ jobs:
     - name: Instalar Dependencias
       run: |
         python -m pip install --upgrade pip
-        pip install pandas numpy scikit-learn==1.7.2 optuna joblib requests python-dotenv
+        pip install pandas numpy scikit-learn==1.7.2 optuna joblib requests python-dotenv xgboost lightgbm catboost
 
     - name: Ejecutar Autoajuste Bayesiano y Guardrails (Optuna)
       env:
@@ -43,7 +43,7 @@ jobs:
       uses: stefanzweifel/git-auto-commit-action@v5
       with:
         commit_message: "robot: [MLOps Auto-Retrain] Modelo y dataset consolidados tras deteccion de Data Drift [skip ci]"
-        file_pattern: "models/modelo_vigente.pkl data/datos_entrenamiento.csv"
+        file_pattern: "models/*.pkl models/active_model.json data/datos_entrenamiento.csv"
         commit_user_name: "Bot MLOps"
         commit_user_email: "mlops-bot@github.com"
         add_options: '-f'
@@ -52,5 +52,7 @@ jobs:
       if: success()
       uses: actions/upload-artifact@v4
       with:
-        name: modelo-vigente-reentrenado
-        path: models/modelo_vigente.pkl
+        name: modelo-versionado-y-manifiesto
+        path: |
+          models/*.pkl
+          models/active_model.json
