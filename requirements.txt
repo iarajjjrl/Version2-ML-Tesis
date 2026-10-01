@@ -37,4 +37,5 @@ tqdm==4.68.4
 typing_extensions==4.16.0
 tzdata==2026.2
 urllib3==2.7.0
+watchdog
 xgboost==3.4.1

@@ -34,7 +34,7 @@ jobs:
 
     - name: Ejecutar Autoajuste Bayesiano y Guardrails (Optuna)
       env:
-        LOTE_DRIFT_PATH: "data/prod_lote2_drift.csv"
+        LOTE_DRIFT_PATH: ${{ github.event.client_payload.ruta_drift }}
       run: |
         python src/auto_tune.py
 

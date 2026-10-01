@@ -3,6 +3,7 @@ import time
 import hashlib
 import json
 import sys
+import subprocess
 import numpy as np
 import pandas as pd
 import joblib
@@ -118,7 +119,7 @@ def hay_reentrenamiento_activo_en_nube():
         pass
     return False
 
-def disparar_reentrenamiento_github():
+def disparar_reentrenamiento_github(ruta_lote_causante=None):
     if hay_reentrenamiento_activo_en_nube():
         print("[NUBE OCUPADA]  GitHub Actions ya tiene una ejecución activa. Omitiendo disparo duplicado.")
         return True
@@ -128,15 +129,52 @@ def disparar_reentrenamiento_github():
     if not token:
         print("[ERROR] No se encontró GITHUB_TOKEN en .env.")
         return False
+
+    if not ruta_lote_causante:
+        print("[ERROR] No se recibió la ruta del lote que causó el drift.")
+        return False
+
+    ruta_absoluta = os.path.abspath(ruta_lote_causante)
+    ruta_relativa = os.path.relpath(ruta_absoluta, PROJECT_ROOT)
+    if os.path.isabs(ruta_relativa) or ruta_relativa.startswith(".."):
+        print("[ERROR] El lote debe estar dentro del repositorio para poder publicarlo.")
+        return False
+
+    try:
+        subprocess.run(
+            ["git", "add", "--", ruta_relativa],
+            cwd=PROJECT_ROOT,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Auto-upload lote drift"],
+            cwd=PROJECT_ROOT,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "push", "origin", "main"],
+            cwd=PROJECT_ROOT,
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        print(f"[ERROR] No se pudo publicar el lote en GitHub: {error}")
+        return False
         
     url = f"https://api.github.com/repos/{repo}/dispatches"
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json"
     }
-    data = {"event_type": "data_drift_detected"}
-    response = requests.post(url, json=data, headers=headers)
-    return response.status_code in [200, 204]
+    data = {
+        "event_type": "data_drift_detected",
+        "client_payload": {"ruta_drift": ruta_relativa.replace(os.sep, "/")},
+    }
+    try:
+        response = requests.post(url, json=data, headers=headers)
+        return response.status_code in (200, 204)
+    except requests.RequestException as error:
+        print(f"[ERROR] Falló el envío del evento a GitHub API: {error}")
+        return False
 
 def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pkl", ruta_base_train="data/datos_entrenamiento.csv", umbral_f1=0.50, umbral_psi=0.25):
     inicio_ttd = time.time()
@@ -230,7 +268,7 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
         if en_cooldown:
             print("[COOLDOWN] Alerta previa enviada recientemente (< 180s). Omitiendo disparo duplicado a GitHub API.")
         else:
-            exito = disparar_reentrenamiento_github()
+            exito = disparar_reentrenamiento_github(ruta_lote_csv)
             if exito:
                 print("[INFO] Evento 'data_drift_detected' procesado correctamente.")
                 alerta_disparada = True
