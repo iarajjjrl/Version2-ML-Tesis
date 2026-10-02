@@ -12,6 +12,7 @@ train_transaction.csv
 
 # 3. Telemetría local y temporales
 logs/
+data/procesados/
 catboost_info/
 repomix-output.xml
 Test_Variables.py

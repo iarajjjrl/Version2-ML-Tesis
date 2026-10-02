@@ -9,7 +9,8 @@ import pandas as pd
 import joblib
 import requests
 from datetime import datetime, timedelta
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, precision_score, recall_score
+from scipy.stats import ks_2samp
 from dotenv import load_dotenv
 
 # Al ejecutar `python src/monitor.py`, Python prioriza `src/` en sys.path.
@@ -205,6 +206,8 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
     
     y_pred = modelo.predict(X_test)
     f1 = f1_score(y_test, y_pred, pos_label=1, zero_division=0)
+    recall = recall_score(y_test, y_pred, pos_label=1, zero_division=0)
+    precision = precision_score(y_test, y_pred, pos_label=1, zero_division=0)
     
     variables_psi = [
         "TransactionAmt",
@@ -214,9 +217,16 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
         "amt_to_mean_card1",
     ]
     psi_por_variable = {}
+    ks_stat_monto = 0.0
 
     if os.path.exists(ruta_base_train):
         df_base = pd.read_csv(ruta_base_train)
+
+        if "TransactionAmt" in df_base.columns and "TransactionAmt" in X_test.columns:
+            monto_base = pd.to_numeric(df_base["TransactionAmt"], errors="coerce").dropna()
+            monto_lote = pd.to_numeric(X_test["TransactionAmt"], errors="coerce").dropna()
+            if not monto_base.empty and not monto_lote.empty:
+                ks_stat_monto = float(ks_2samp(monto_base, monto_lote).statistic)
 
         for variable in variables_psi:
             if variable not in df_base.columns or variable not in X_test.columns:
@@ -241,6 +251,8 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
     print(f"\n[INFO] Evaluando telemetría sobre el lote: {ruta_lote_csv}")
     print(f"[MODELO ACTIVO]  {nombre_algoritmo} | Umbral Calibrado: {umbral_calibrado:.2f} | SHA256: [{hash_modelo}] | Compilado: {fecha_mod_modelo}")
     print(f"[RESULTADO] F1-Score (Fraude): {f1:.4f} | Umbral Mínimo: {umbral_f1}")
+    print(f"[RESULTADO] Recall: {recall:.4f} | Precision: {precision:.4f}")
+    print(f"[RESULTADO] KS TransactionAmt: {ks_stat_monto:.4f}")
     print(f"[RESULTADO] Population Stability Index (PSI): {psi_valor:.4f} | Umbral PSI: {umbral_psi}")
     print(f"[RESULTADO] Drift Detection Time (TTD): {ttd_segundos:.6f} segundos")
     
@@ -252,17 +264,10 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
         )
 
     hay_drift_f1 = f1 < umbral_f1
-    hay_drift_psi = bool(variables_con_drift)
-    hay_drift = hay_drift_f1 or hay_drift_psi
+    hay_drift = hay_drift_f1
 
     if hay_drift:
-        if hay_drift_f1:
-            print(f"[ALERTA] Degradación detectada (F1: {f1:.4f} < {umbral_f1}).")
-        if hay_drift_psi:
-            print(
-                "[ALERTA] Drift estadístico detectado en: "
-                + ", ".join(variables_con_drift)
-            )
+        print(f"[ALERTA] Degradación detectada (F1: {f1:.4f} < {umbral_f1}).")
 
         en_cooldown = consultar_ultimo_cooldown_alerta()
         if en_cooldown:
@@ -292,6 +297,9 @@ def evaluar_lote_produccion(ruta_lote_csv, modelo_path="models/modelo_vigente.pk
         "alerta_disparada": alerta_disparada,
         "psi_por_variable": json.dumps(psi_por_variable),
         "variables_con_drift": json.dumps(variables_con_drift),
+        "recall": round(recall, 4),
+        "precision": round(precision, 4),
+        "ks_stat_monto": round(ks_stat_monto, 4),
     }
     
     df_nuevo = pd.DataFrame([registro])

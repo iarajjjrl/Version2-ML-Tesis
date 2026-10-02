@@ -1,4 +1,5 @@
 import os
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -19,6 +20,7 @@ from src.stream_sintetico import (
 
 
 INGESTA_DIR = os.path.join(PROJECT_ROOT, "data", "ingesta_viva")
+PROCESADOS_DIR = os.path.join(PROJECT_ROOT, "data", "procesados")
 
 
 class LoteIngestaHandler(FileSystemEventHandler):
@@ -78,6 +80,22 @@ class LoteIngestaHandler(FileSystemEventHandler):
                 f"[INGESTA][ERROR] No se pudo procesar '{event.src_path}': {error}",
                 flush=True,
             )
+        finally:
+            if os.path.isfile(event.src_path):
+                try:
+                    os.makedirs(PROCESADOS_DIR, exist_ok=True)
+                    destino = os.path.join(PROCESADOS_DIR, os.path.basename(event.src_path))
+                    if os.path.exists(destino):
+                        nombre, extension = os.path.splitext(os.path.basename(event.src_path))
+                        sufijo = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+                        destino = os.path.join(PROCESADOS_DIR, f"{nombre}_{sufijo}{extension}")
+                    shutil.move(event.src_path, destino)
+                    print(f"[INGESTA] Lote movido a procesados: {destino}", flush=True)
+                except Exception as error:
+                    print(
+                        f"[INGESTA][ERROR] No se pudo mover '{event.src_path}' a procesados: {error}",
+                        flush=True,
+                    )
 
 
 def iniciar_vigilancia():
