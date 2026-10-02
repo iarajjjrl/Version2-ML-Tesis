@@ -6,7 +6,7 @@ import time
 from datetime import datetime, timezone
 
 from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver as Observer
 
 # Mantiene la raíz del proyecto en sys.path al ejecutar este archivo directamente.
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
