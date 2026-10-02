@@ -1,6 +1,9 @@
 {
-  "modelo_activo": "models/modelo_xgboost_20261002T091200.955710Z_ece5f164.pkl",
-  "f1_calibrado": 0.634177,
-  "umbral": 0.54,
-  "despliegue": "2026-10-02T09:12:01.089418+00:00"
+  "modelo_activo": "models/modelo_catboost_20261002T092439.256205Z_288497ff.pkl",
+  "f1_calibrado": 0.5742,
+  "umbral": 0.74,
+  "despliegue": "2026-10-02T09:24:39.316443+00:00",
+  "sha256": "288497ff27b55d7d312a84751ecff1a00deb4b99614585457967f6f046c36f95",
+  "algoritmo": "CatBoost",
+  "version": "2026-10-02T09:24:39.316443+00:00"
 }
