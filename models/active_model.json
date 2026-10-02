@@ -1,6 +1,6 @@
 {
-  "modelo_activo": "models/modelo_xgboost_20261002T055225.762143Z_8504fef8.pkl",
-  "f1_calibrado": 0.596082,
-  "umbral": 0.54,
-  "despliegue": "2026-10-02T05:52:25.819555+00:00"
+  "modelo_activo": "models/modelo_xgboost_20261002T061629.860703Z_d5a55e84.pkl",
+  "f1_calibrado": 0.634449,
+  "umbral": 0.47,
+  "despliegue": "2026-10-02T06:16:30.005823+00:00"
 }
