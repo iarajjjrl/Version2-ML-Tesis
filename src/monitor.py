@@ -128,7 +128,8 @@ def _ejecutar_git_validado(argumentos, token=None):
     salida, error = resultado.stdout.strip(), resultado.stderr.strip()
     if token:
         salida, error = salida.replace(token, "[REDACTADO]"), error.replace(token, "[REDACTADO]")
-    print(f"[GIT] git {' '.join(argumentos)} | returncode={resultado.returncode}")
+    argumentos_seguros = [arg.replace(token, "[REDACTADO]") for arg in argumentos] if token else argumentos
+    print(f"[GIT] git {' '.join(argumentos_seguros)} | returncode={resultado.returncode}")
     if salida:
         print(f"[GIT][stdout] {salida}")
     if error:

@@ -34,7 +34,8 @@ def ejecutar_git(argumentos, token=None):
     if token:
         salida = salida.replace(token, "[REDACTADO]")
         error = error.replace(token, "[REDACTADO]")
-    print(f"[GIT] git {' '.join(argumentos)} | returncode={resultado.returncode}", flush=True)
+    argumentos_seguros = [arg.replace(token, "[REDACTADO]") for arg in argumentos] if token else argumentos
+    print(f"[GIT] git {' '.join(argumentos_seguros)} | returncode={resultado.returncode}", flush=True)
     if salida:
         print(f"[GIT][stdout] {salida}", flush=True)
     if error:

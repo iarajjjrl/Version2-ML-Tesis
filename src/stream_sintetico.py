@@ -24,7 +24,8 @@ def _git_validado(argumentos):
     token = os.getenv("GITHUB_TOKEN", "")
     stdout = resultado.stdout.strip().replace(token, "[REDACTADO]") if token else resultado.stdout.strip()
     stderr = resultado.stderr.strip().replace(token, "[REDACTADO]") if token else resultado.stderr.strip()
-    print(f"[GIT] git {' '.join(argumentos)} | returncode={resultado.returncode}", flush=True)
+    argumentos_seguros = [arg.replace(token, "[REDACTADO]") for arg in argumentos] if token else argumentos
+    print(f"[GIT] git {' '.join(argumentos_seguros)} | returncode={resultado.returncode}", flush=True)
     if stdout:
         print(f"[GIT][stdout] {stdout}", flush=True)
     if stderr:
