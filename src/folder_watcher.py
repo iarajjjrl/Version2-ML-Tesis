@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -104,6 +105,48 @@ def iniciar_vigilancia():
 
     observer = Observer()
     observer.schedule(LoteIngestaHandler(), INGESTA_DIR, recursive=False)
+
+    print("\n[INFO] Inicializando configuración GitOps del contenedor...", flush=True)
+    token = os.getenv("GITHUB_TOKEN")
+    repo = os.getenv("GITHUB_REPOSITORY", "iarajjjrl/Version2-ML-Tesis")
+
+    if token and repo:
+        url_autenticada = f"https://{token}@github.com/{repo}.git"
+        try:
+            if not os.path.exists(os.path.join(PROJECT_ROOT, ".git")):
+                subprocess.run(["git", "init"], cwd=PROJECT_ROOT, check=True)
+                subprocess.run(
+                    ["git", "remote", "add", "origin", url_autenticada],
+                    cwd=PROJECT_ROOT,
+                    check=True,
+                )
+                subprocess.run(["git", "fetch", "origin", "main"], cwd=PROJECT_ROOT, check=True)
+                subprocess.run(
+                    ["git", "reset", "--mixed", "origin/main"],
+                    cwd=PROJECT_ROOT,
+                    check=True,
+                )
+                subprocess.run(
+                    ["git", "branch", "-M", "main"],
+                    cwd=PROJECT_ROOT,
+                    check=True,
+                )
+                print("[INFO] Historial remoto sincronizado correctamente.", flush=True)
+            else:
+                subprocess.run(
+                    ["git", "remote", "set-url", "origin", url_autenticada],
+                    cwd=PROJECT_ROOT,
+                    check=True,
+                )
+        except Exception as error:
+            # No imprimir el texto de la excepción: podría incluir la URL con el token.
+            print(
+                f"[ERROR] No se pudo configurar GitOps ({type(error).__name__}).",
+                flush=True,
+            )
+    else:
+        print("[ERROR] Faltan GITHUB_TOKEN o GITHUB_REPOSITORY; GitOps no está configurado.", flush=True)
+
     observer.start()
 
     try:

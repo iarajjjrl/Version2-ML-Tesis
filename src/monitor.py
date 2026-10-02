@@ -143,12 +143,17 @@ def disparar_reentrenamiento_github(ruta_lote_causante=None):
 
     try:
         subprocess.run(
-            ["git", "add", "--", ruta_relativa],
+            ["git", "add", ruta_relativa],
             cwd=PROJECT_ROOT,
             check=True,
         )
         subprocess.run(
-            ["git", "commit", "-m", "Auto-upload lote drift"],
+            [
+                "git",
+                "commit",
+                "-m",
+                f"Auto-upload lote drift: {os.path.basename(ruta_lote_causante)}",
+            ],
             cwd=PROJECT_ROOT,
             check=True,
         )
@@ -158,7 +163,10 @@ def disparar_reentrenamiento_github(ruta_lote_causante=None):
             check=True,
         )
     except subprocess.CalledProcessError as error:
-        print(f"[ERROR] No se pudo publicar el lote en GitHub: {error}")
+        # La salida de git puede incluir la URL remota autenticada; no mostrarla.
+        print(
+            f"[ERROR] No se pudo publicar el lote en GitHub ({type(error).__name__})."
+        )
         return False
         
     url = f"https://api.github.com/repos/{repo}/dispatches"
