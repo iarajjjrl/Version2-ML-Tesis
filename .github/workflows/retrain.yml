@@ -4,7 +4,6 @@ on:
   repository_dispatch:
     types: [data_drift_detected]
 
-# 🔹 CONTROL DE CONCURRENCIA: Solo 1 ejecutor activo a la vez
 concurrency:
   group: mlops-retraining-pipeline
   cancel-in-progress: true
@@ -15,44 +14,96 @@ permissions:
 jobs:
   ephemeral_retraining:
     runs-on: ubuntu-latest
-
     steps:
-    - name: Checkout del Codigo
-      uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout del Codigo
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Configurar Entorno Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.13'
+      - name: Configurar Entorno Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
 
-    - name: Instalar Dependencias
-      run: |
-        python -m pip install --upgrade pip
-        pip install pandas numpy scikit-learn==1.7.2 optuna joblib requests python-dotenv xgboost lightgbm catboost
+      - name: Instalar Dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy scikit-learn==1.7.2 optuna joblib requests python-dotenv xgboost lightgbm catboost
 
-    - name: Ejecutar Autoajuste Bayesiano y Guardrails (Optuna)
-      env:
-        LOTE_DRIFT_PATH: ${{ github.event.client_payload.ruta_drift }}
-      run: |
-        python src/auto_tune.py
+      - name: Guardar huella del modelo anterior
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          p = 'models/active_model.json'
+          old = ''
+          if os.path.isfile(p):
+              m = json.load(open(p, encoding='utf-8'))
+              model = m.get('modelo_activo', '')
+              if os.path.isfile(model):
+                  old = hashlib.sha256(open(model, 'rb').read()).hexdigest()
+          open(os.environ['RUNNER_TEMP'] + '/previous_model_sha256', 'w').write(old)
+          print(f'[DEPLOY] SHA-256 anterior: {old or "INEXISTENTE"}')
+          PY
 
-    - name: Publicar Modelo Actualizado al Repositorio (Auto-Commit)
-      if: success()
-      uses: stefanzweifel/git-auto-commit-action@v5
-      with:
-        commit_message: "robot: [MLOps Auto-Retrain] Modelo y dataset consolidados tras deteccion de Data Drift [skip ci]"
-        file_pattern: "models/*.pkl models/active_model.json data/datos_entrenamiento.csv"
-        commit_user_name: "Bot MLOps"
-        commit_user_email: "mlops-bot@github.com"
-        add_options: '-f'
+      - name: Ejecutar Autoajuste Bayesiano y Guardrails (Optuna)
+        env:
+          LOTE_DRIFT_PATH: ${{ github.event.client_payload.ruta_drift }}
+        run: python src/auto_tune.py
 
-    - name: Registrar Artefacto Optimizado
-      if: success()
-      uses: actions/upload-artifact@v4
-      with:
-        name: modelo-versionado-y-manifiesto
-        path: |
-          models/*.pkl
-          models/active_model.json
+      - name: Validar ganador y completar manifiesto
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, subprocess
+          from datetime import datetime, timezone
+          import joblib
+
+          def git(args):
+              p = subprocess.run(['git', *args], capture_output=True, text=True)
+              print(f'[GIT] git {" ".join(args)} | returncode={p.returncode}')
+              print(f'[GIT][stdout] {p.stdout.strip()}')
+              print(f'[GIT][stderr] {p.stderr.strip()}')
+              if p.returncode != 0:
+                  raise SystemExit(p.returncode)
+              return p.stdout.strip()
+
+          path = 'models/active_model.json'
+          if not os.path.isfile(path):
+              raise SystemExit('[DEPLOY][ERROR] auto_tune no generó active_model.json (guardrail no aprobado o fallo)')
+          manifest = json.load(open(path, encoding='utf-8'))
+          model_path = manifest.get('modelo_activo', '')
+          if not model_path.startswith('models/') or not os.path.isfile(model_path):
+              raise SystemExit(f'[DEPLOY][ERROR] PKL ganador inexistente/ruta inválida: {model_path}')
+          with open(model_path, 'rb') as f:
+              digest = hashlib.sha256(f.read()).hexdigest()
+          previous = open(os.environ['RUNNER_TEMP'] + '/previous_model_sha256').read().strip()
+          if digest == previous:
+              raise SystemExit('[DEPLOY][ERROR] El hash ganador es igual al anterior; no hay modelo nuevo que publicar')
+          artifact = joblib.load(model_path)
+          algorithm = getattr(artifact, 'name', artifact.__class__.__name__)
+          version = manifest.get('despliegue') or datetime.now(timezone.utc).isoformat()
+          manifest.update({'sha256': digest, 'algoritmo': algorithm, 'version': version})
+          with open(path, 'w', encoding='utf-8') as f:
+              json.dump(manifest, f, indent=2, ensure_ascii=False)
+              f.write('\n')
+          print(f'[DEPLOY] Ganador validado: ruta={model_path} SHA256={digest} algoritmo={algorithm} version={version}')
+
+          git(['add', '-f', '--', model_path, path])
+          staged = git(['diff', '--cached', '--name-only']).splitlines()
+          if model_path not in staged or path not in staged:
+              raise SystemExit('[DEPLOY][ERROR] PKL y manifiesto no quedaron juntos en el índice')
+          git(['-c', 'user.name=Bot MLOps', '-c', 'user.email=mlops-bot@github.com',
+               'commit', '-m', 'robot: publicar modelo ganador y manifiesto [skip ci]'])
+          committed = git(['show', '--format=', '--name-only', 'HEAD']).splitlines()
+          if model_path not in committed or path not in committed:
+              raise SystemExit('[DEPLOY][ERROR] El commit no contiene PKL y manifiesto juntos')
+          git(['push', 'origin', 'HEAD:main'])
+          print(f'[DEPLOY] Publicación atómica confirmada en HEAD={git(["rev-parse", "HEAD"])}')
+          PY
+
+      - name: Registrar Artefacto Optimizado
+        uses: actions/upload-artifact@v4
+        with:
+          name: modelo-versionado-y-manifiesto
+          path: |
+            models/*.pkl
+            models/active_model.json

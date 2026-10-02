@@ -120,6 +120,23 @@ def hay_reentrenamiento_activo_en_nube():
         pass
     return False
 
+
+def _ejecutar_git_validado(argumentos, token=None):
+    resultado = subprocess.run(
+        ["git", *argumentos], cwd=PROJECT_ROOT, capture_output=True, text=True
+    )
+    salida, error = resultado.stdout.strip(), resultado.stderr.strip()
+    if token:
+        salida, error = salida.replace(token, "[REDACTADO]"), error.replace(token, "[REDACTADO]")
+    print(f"[GIT] git {' '.join(argumentos)} | returncode={resultado.returncode}")
+    if salida:
+        print(f"[GIT][stdout] {salida}")
+    if error:
+        print(f"[GIT][stderr] {error}")
+    if resultado.returncode != 0:
+        raise subprocess.CalledProcessError(resultado.returncode, resultado.args)
+    return resultado
+
 def disparar_reentrenamiento_github(ruta_lote_causante=None):
     if hay_reentrenamiento_activo_en_nube():
         print("[NUBE OCUPADA]  GitHub Actions ya tiene una ejecución activa. Omitiendo disparo duplicado.")
@@ -142,26 +159,12 @@ def disparar_reentrenamiento_github(ruta_lote_causante=None):
         return False
 
     try:
-        subprocess.run(
-            ["git", "add", ruta_relativa],
-            cwd=PROJECT_ROOT,
-            check=True,
+        _ejecutar_git_validado(["add", "--", ruta_relativa], token)
+        _ejecutar_git_validado(
+            ["commit", "--only", "-m", f"Auto-upload lote drift: {os.path.basename(ruta_lote_causante)}", "--", ruta_relativa],
+            token,
         )
-        subprocess.run(
-            [
-                "git",
-                "commit",
-                "-m",
-                f"Auto-upload lote drift: {os.path.basename(ruta_lote_causante)}",
-            ],
-            cwd=PROJECT_ROOT,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "push", "origin", "main"],
-            cwd=PROJECT_ROOT,
-            check=True,
-        )
+        _ejecutar_git_validado(["push", "origin", "main"], token)
     except subprocess.CalledProcessError as error:
         # La salida de git puede incluir la URL remota autenticada; no mostrarla.
         print(

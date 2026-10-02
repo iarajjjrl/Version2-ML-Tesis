@@ -11,7 +11,6 @@ WORKDIR /app
 COPY requirements.txt .
 COPY src/ ./src/
 COPY models/ ./models/
-COPY .env .
 
 # Instalar las dependencias de Python
 RUN pip install --no-cache-dir -r requirements.txt

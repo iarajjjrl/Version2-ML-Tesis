@@ -3,6 +3,9 @@ import sys
 import time
 import requests
 import subprocess
+import hashlib
+import json
+import joblib
 import pandas as pd
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -12,6 +15,46 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.monitor import evaluar_lote_produccion, obtener_huella_modelo
 
 load_dotenv()
+
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
+
+def _git_validado(argumentos):
+    resultado = subprocess.run(["git", *argumentos], cwd=PROJECT_ROOT, capture_output=True, text=True)
+    token = os.getenv("GITHUB_TOKEN", "")
+    stdout = resultado.stdout.strip().replace(token, "[REDACTADO]") if token else resultado.stdout.strip()
+    stderr = resultado.stderr.strip().replace(token, "[REDACTADO]") if token else resultado.stderr.strip()
+    print(f"[GIT] git {' '.join(argumentos)} | returncode={resultado.returncode}", flush=True)
+    if stdout:
+        print(f"[GIT][stdout] {stdout}", flush=True)
+    if stderr:
+        print(f"[GIT][stderr] {stderr}", flush=True)
+    return stdout if resultado.returncode == 0 else None
+
+
+def _leer_modelo_activo(exigir_hash_manifiesto=True):
+    with open(os.path.join(PROJECT_ROOT, "models", "active_model.json"), encoding="utf-8") as archivo:
+        manifiesto = json.load(archivo)
+    ruta_relativa = manifiesto.get("modelo_activo", "")
+    ruta_modelo = os.path.abspath(os.path.join(PROJECT_ROOT, ruta_relativa))
+    if os.path.commonpath([PROJECT_ROOT, ruta_modelo]) != PROJECT_ROOT or not os.path.isfile(ruta_modelo):
+        raise ValueError(f"[HOT-SWAP][ERROR] Ruta de modelo inválida o inexistente: {ruta_relativa}")
+    with open(ruta_modelo, "rb") as archivo:
+        sha256 = hashlib.sha256(archivo.read()).hexdigest()
+    if exigir_hash_manifiesto and manifiesto.get("sha256") != sha256:
+        raise ValueError(f"[HOT-SWAP][ERROR] SHA-256 no coincide para {ruta_relativa}")
+    modelo = joblib.load(ruta_modelo)
+    algoritmo = getattr(modelo, "name", modelo.__class__.__name__)
+    if exigir_hash_manifiesto and manifiesto.get("algoritmo") != algoritmo:
+        raise ValueError(f"[HOT-SWAP][ERROR] Algoritmo no coincide: manifiesto={manifiesto.get('algoritmo')} artefacto={algoritmo}")
+    version = manifiesto.get("version") or manifiesto.get("despliegue") or os.path.basename(ruta_modelo)
+    if not version:
+        raise ValueError("[HOT-SWAP][ERROR] El manifiesto no contiene timestamp/versión")
+    commit_modelo = _git_validado(["rev-parse", "origin/main"])
+    if not commit_modelo:
+        raise ValueError("[HOT-SWAP][ERROR] No se pudo leer el commit remoto origin/main")
+    return {"ruta": ruta_relativa, "sha256": sha256, "algoritmo": algoritmo,
+            "version": version, "commit_modelo": commit_modelo}
 
 def esperar_github_actions_dinamico(timestamp_disparo, timeout_segundos=400, intervalo_poll=8):
     """
@@ -95,14 +138,13 @@ def esperar_github_actions_dinamico(timestamp_disparo, timeout_segundos=400, int
     return False
 
 def ejecutar_git_pull_automatico():
-    try:
-        print("[AUTO-PULL]  Ejecutando 'git pull' para descargar el nuevo modelo de producción...")
-        resultado = subprocess.run(["git", "pull", "origin", "main"], capture_output=True, text=True)
-        print(resultado.stdout)
-        return True
-    except Exception as e:
-        print(f"[AUTO-PULL] Error al ejecutar git pull: {e}")
+    print("[AUTO-PULL] Sincronizando únicamente models/ desde origin/main...", flush=True)
+    if _git_validado(["fetch", "origin", "main"]) is None:
         return False
+    if _git_validado(["checkout", "origin/main", "--", "models"]) is None:
+        print("[AUTO-PULL][ERROR] Checkout de models/ falló; se cancela Hot-Swap y reevaluación.", flush=True)
+        return False
+    return True
 
 def ejecutar_simulacion_stream():
     print("="*60)
@@ -163,8 +205,29 @@ def ejecutar_simulacion_stream():
                     exito_nube = esperar_github_actions_dinamico(timestamp_disparo=timestamp_evaluacion)
                     
                     if exito_nube:
-                        ejecutar_git_pull_automatico()
-                        print("[STREAM]  Modelo actualizado descargado. Procediendo a RE-EVALUAR el mismo lote...")
+                        try:
+                            modelo_anterior = _leer_modelo_activo(exigir_hash_manifiesto=False)
+                            sincronizado = ejecutar_git_pull_automatico()
+                            if not sincronizado:
+                                break
+                            modelo_nuevo = _leer_modelo_activo()
+                            print(
+                                f"[HOT-SWAP][COMPARACION] anterior_sha256={modelo_anterior['sha256']} "
+                                f"anterior_algoritmo={modelo_anterior['algoritmo']} "
+                                f"nuevo_sha256={modelo_nuevo['sha256']} "
+                                f"nuevo_algoritmo={modelo_nuevo['algoritmo']} "
+                                f"version={modelo_nuevo['version']} "
+                                f"commit_modelo_anterior={modelo_anterior['commit_modelo']} "
+                                f"commit_modelo_nuevo={modelo_nuevo['commit_modelo']}",
+                                flush=True,
+                            )
+                            if modelo_nuevo["sha256"] == modelo_anterior["sha256"]:
+                                print("[HOT-SWAP][ERROR] No se publicó un artefacto nuevo; no se reevaluará.", flush=True)
+                                break
+                        except Exception as error:
+                            print(f"[HOT-SWAP][ERROR] Validación/sincronización fallida: {error}", flush=True)
+                            break
+                        print("[HOT-SWAP] Artefacto nuevo validado; reevaluando el mismo lote...", flush=True)
                     else:
                         print("[STREAM]  GitHub Actions no logró generar un modelo superior. Manteniendo modelo actual.")
                         break

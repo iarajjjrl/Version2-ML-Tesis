@@ -15,6 +15,7 @@ if PROJECT_ROOT not in sys.path:
 
 from src.monitor import evaluar_lote_produccion
 from src.stream_sintetico import (
+    _leer_modelo_activo,
     esperar_github_actions_dinamico,
     ejecutar_git_pull_automatico,
 )
@@ -22,6 +23,25 @@ from src.stream_sintetico import (
 
 INGESTA_DIR = os.path.join(PROJECT_ROOT, "data", "ingesta_viva")
 PROCESADOS_DIR = os.path.join(PROJECT_ROOT, "data", "procesados")
+
+
+def ejecutar_git(argumentos, token=None):
+    resultado = subprocess.run(
+        ["git", *argumentos], cwd=PROJECT_ROOT, capture_output=True, text=True
+    )
+    salida = resultado.stdout.strip()
+    error = resultado.stderr.strip()
+    if token:
+        salida = salida.replace(token, "[REDACTADO]")
+        error = error.replace(token, "[REDACTADO]")
+    print(f"[GIT] git {' '.join(argumentos)} | returncode={resultado.returncode}", flush=True)
+    if salida:
+        print(f"[GIT][stdout] {salida}", flush=True)
+    if error:
+        print(f"[GIT][stderr] {error}", flush=True)
+    if resultado.returncode != 0:
+        raise RuntimeError(f"git {' '.join(argumentos)} falló (returncode={resultado.returncode})")
+    return resultado
 
 
 class LoteIngestaHandler(FileSystemEventHandler):
@@ -48,10 +68,24 @@ class LoteIngestaHandler(FileSystemEventHandler):
                 exito_nube = esperar_github_actions_dinamico(timestamp_evaluacion)
 
                 if exito_nube:
-                    exito_pull = ejecutar_git_pull_automatico()
-                    if exito_pull:
+                    try:
+                        modelo_anterior = _leer_modelo_activo(exigir_hash_manifiesto=False)
+                        exito_pull = ejecutar_git_pull_automatico()
+                        if not exito_pull:
+                            raise RuntimeError("falló la sincronización Git")
+                        modelo_nuevo = _leer_modelo_activo()
                         print(
-                            "[HOT-SWAP] Nuevo modelo descargado; reevaluando el lote con el modelo activo.",
+                            f"[HOT-SWAP][COMPARACION] anterior_sha256={modelo_anterior['sha256']} "
+                            f"anterior_algoritmo={modelo_anterior['algoritmo']} nuevo_sha256={modelo_nuevo['sha256']} "
+                            f"nuevo_algoritmo={modelo_nuevo['algoritmo']} version={modelo_nuevo['version']} "
+                            f"commit_modelo_anterior={modelo_anterior['commit_modelo']} "
+                            f"commit_modelo_nuevo={modelo_nuevo['commit_modelo']}",
+                            flush=True,
+                        )
+                        if modelo_nuevo["sha256"] == modelo_anterior["sha256"]:
+                            raise RuntimeError("la publicación no contiene un artefacto nuevo")
+                        print(
+                            "[HOT-SWAP] Artefacto nuevo validado; reevaluando el lote.",
                             flush=True,
                         )
                         registro = evaluar_lote_produccion(event.src_path)
@@ -59,9 +93,9 @@ class LoteIngestaHandler(FileSystemEventHandler):
                             f"[HOT-SWAP] Reevaluación completada: {registro}",
                             flush=True,
                         )
-                    else:
+                    except Exception as error:
                         print(
-                            "[HOT-SWAP][ERROR] No se pudo descargar el nuevo modelo.",
+                            f"[HOT-SWAP][ERROR] Sincronización/validación fallida; reevaluación cancelada: {error}",
                             flush=True,
                         )
                 else:
@@ -114,30 +148,15 @@ def iniciar_vigilancia():
         url_autenticada = f"https://{token}@github.com/{repo}.git"
         try:
             if not os.path.exists(os.path.join(PROJECT_ROOT, ".git")):
-                subprocess.run(["git", "init"], cwd=PROJECT_ROOT, check=True)
-                subprocess.run(
-                    ["git", "remote", "add", "origin", url_autenticada],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                )
-                subprocess.run(["git", "fetch", "origin", "main"], cwd=PROJECT_ROOT, check=True)
-                subprocess.run(
-                    ["git", "reset", "--mixed", "origin/main"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                )
-                subprocess.run(
-                    ["git", "branch", "-M", "main"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                )
+                ejecutar_git(["init"], token)
+                ejecutar_git(["remote", "add", "origin", url_autenticada], token)
+                ejecutar_git(["fetch", "origin", "main"], token)
+                ejecutar_git(["reset", "--mixed", "origin/main"], token)
+                ejecutar_git(["branch", "-M", "main"], token)
+                ejecutar_git(["checkout", "origin/main", "--", "models"], token)
                 print("[INFO] Historial remoto sincronizado correctamente.", flush=True)
             else:
-                subprocess.run(
-                    ["git", "remote", "set-url", "origin", url_autenticada],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                )
+                ejecutar_git(["remote", "set-url", "origin", url_autenticada], token)
         except Exception as error:
             # No imprimir el texto de la excepción: podría incluir la URL con el token.
             print(
