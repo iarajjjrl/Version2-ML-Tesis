@@ -1,6 +1,9 @@
 {
-  "modelo_activo": "models/modelo_randomforest_20261006T060601.781151Z_30d24e22.pkl",
-  "f1_calibrado": 0.597015,
-  "umbral": 0.33,
-  "despliegue": "2026-10-06T06:06:03.168941+00:00"
+  "modelo_activo": "models/modelo_randomforest_20261006T061903.058339Z_3ea68c81.pkl",
+  "f1_calibrado": 0.58055,
+  "umbral": 0.34,
+  "despliegue": "2026-10-06T06:19:04.457876+00:00",
+  "sha256": "3ea68c810ea834c2e845bdd9e014858b237344a24299c4eb25de90d927dc5f0d",
+  "algoritmo": "RandomForest",
+  "version": "2026-10-06T06:19:04.457876+00:00"
 }
