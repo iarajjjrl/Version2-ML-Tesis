@@ -92,3 +92,53 @@ Permite ensayar razones hipotéticas costo(FN)/costo(FP), por ejemplo 1, 2,
 
 Usar error_cost_sensitivity.csv solo para explorar el intercambio entre
 detección de fraude y falsas alarmas; no afirmar ahorro económico real.
+
+
+## 9. Etapa siguiente: estudio reproducible de escenarios y semillas
+
+**Ya pasó el piloto V3. No volver a ejecutar V2/V3 ni borrar sus resultados.**
+Resultados observados guardados en docs/RESULTADOS_PILOTO_V3.md.
+Diseño de estudio fijado en docs/PROTOCOLO_EXPERIMENTAL.md.
+
+Actualizar rama e instalar únicamente el profiler experimental:
+
+    git fetch origin
+    git merge --ff-only origin/experimento-comparativo
+    .\venv\Scripts\python.exe -m pip install -r requirements-experiments.txt
+
+Comprobar sintaxis y dependencias sin iniciar entrenamientos:
+
+    .\venv\Scripts\python.exe -m unittest discover -s tests -p "test_experiment_policies.py" -v
+    .\venv\Scripts\python.exe src\experiments\run_study.py --help
+
+Primer estudio: dos escenarios, tres semillas de Optuna (42, 43, 44),
+tres trials por algoritmo, ocho ventanas de IEEE-CIS, sample de 120000
+registros, control de eventos con 2 ventanas degradadas y cooldown 1 ventana:
+
+    .\venv\Scripts\python.exe src\experiments\run_study.py --scenarios natural synthetic --seeds 42 43 44 --trials 3 --max-rows 120000 --windows 8 --output data\experiments\study-a --profile-resources
+
+El estudio ejecuta las seis corridas secuencialmente, no en paralelo. La carga
+computacional puede ser considerable: cerrar otras tareas intensivas de CPU/RAM
+y revisar espacio en disco. Si falla, conservar los resultados y volver
+a lanzar el MISMO comando, que evita repetir corridas completas.
+
+Al finalizar, revisar estos archivos:
+
+- data/experiments/study-a/study_config.json: parámetros y commit de Git.
+- data/experiments/study-a/study_runs.csv: una fila por escenario, semilla y política.
+- data/experiments/study-a/study_aggregate.csv: medias/desviaciones entre seeds.
+- data/experiments/study-a/runs/natural/seed_42/summary.csv: ejemplo de detalle.
+- data/experiments/study-a/logs/: logs para auditar cada ejecución.
+
+ATENCIÓN: las tres semillas NO generan tres datasets independientes. Son
+repeticiones del proceso de búsqueda de hiperparámetros bajo la MISMA secuencia;
+un análisis de significación debe reconocer esa dependencia y realizar
+experimentos temporales independientes si se requiere inferencia más fuerte.
+
+Las mediciones --profile-resources registran RSS máximo aproximado y segundos
+de CPU del árbol de procesos Python (muestreados). NO incluyen automáticamente
+Docker, GitHub Actions, electricidad o tarifas cloud.
+
+Próximo hito después de study-a: analizar robustez, ampliar muestra de IEEE-CIS
+si la máquina lo permite y medir tiempo de recuperación completo del prototipo
+en Docker/GitHub Actions; después redactar capítulo de experimentación.
