@@ -49,7 +49,6 @@ def train(df_train, directory, trials, seed, profile_resources=False):
     path = directory / "training_snapshot.csv"
     start_wall = time.perf_counter()
     start_cpu = time.process_time()
-    df_train.to_csv(path, index=False)
     def fit_model():
         return evaluar_y_seleccionar_mejor_modelo(
             ruta_train=str(path),
@@ -63,9 +62,11 @@ def train(df_train, directory, trials, seed, profile_resources=False):
     usage = {}
     if profile_resources:
         with ResourceSampler() as sampler:
+            df_train.to_csv(path, index=False)
             manifest = fit_model()
         usage = sampler.result()
     else:
+        df_train.to_csv(path, index=False)
         manifest = fit_model()
     if not manifest:
         raise RuntimeError("AutoML no generó manifiesto de candidato")
