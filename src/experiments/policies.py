@@ -24,6 +24,11 @@ def decide_update(policy, window, f1, f1_trigger, every,
     return True, 0, "f1_degradation"
 
 
+def execute_within_horizon(requested, index, last_window, train_after_final=False):
+    """Si no habrá ventana posterior, omitir mantenimiento al cerrar la última."""
+    return bool(requested and (train_after_final or index != last_window))
+
+
 def approve_promotion(candidate_f1, incumbent_f1, min_delta, min_f1):
     """Empates no promueven. Ambos F1 se evalúan sobre los mismos datos."""
     if candidate_f1 < min_f1:
