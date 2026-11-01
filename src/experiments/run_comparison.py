@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from src.auto_tune import evaluar_y_seleccionar_mejor_modelo  # noqa: E402
 from src.experiments.policies import (  # noqa: E402
-    POLICIES, approve_promotion, decide_update,
+    POLICIES, approve_promotion, decide_update, execute_within_horizon,
 )
 
 
@@ -188,8 +188,9 @@ def main():
                 args.every, args.consecutive_low, args.cooldown_windows,
                 low_streak, last_trigger,
             )
-            trigger = requested_trigger and (
-                args.train_after_final_window or index != final_window_index
+            trigger = execute_within_horizon(
+                requested_trigger, index, final_window_index,
+                args.train_after_final_window
             )
             if requested_trigger and not trigger:
                 reason = "end_of_horizon_not_retrained"
