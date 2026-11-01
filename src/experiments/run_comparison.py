@@ -153,6 +153,15 @@ def main():
     initial_score = scores(initial_model, initial_holdout)
     print(f"[BASELINE] F1 holdout histórico={initial_score['f1']:.4f}; "
           f"costo inicial={initial_wall:.2f}s (común a todas)", flush=True)
+    (output / "baseline_metrics.json").write_text(
+        json.dumps({
+            "initial_model": initial_manifest["modelo_activo"],
+            "initial_holdout_metrics": initial_score,
+            "initial_training_wall_seconds": initial_wall,
+            "initial_training_process_cpu_seconds": initial_cpu,
+            "common_to_all_policies": True,
+        }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
 
     rows = []
     for policy in POLICIES:
