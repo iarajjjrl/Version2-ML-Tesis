@@ -132,6 +132,7 @@ def main():
         cumulative_train_cpu = 0.0
         n_retrains = 0
         for window_index, window in windows:
+            model_used_this_window = active_algorithm
             start_eval = time.perf_counter()
             metrics = scores(model, window)
             eval_wall = time.perf_counter() - start_eval
@@ -171,7 +172,8 @@ def main():
                 "candidate_promoted": promoted,
                 "candidate_model": candidate_algorithm,
                 "candidate_holdout_f1": candidate_holdout_f1,
-                "active_model_for_window": active_algorithm if not promoted else "[reemplazado tras evaluar ventana]",
+                "active_model_for_window": model_used_this_window,
+                "active_model_after_window": active_algorithm,
                 "training_wall_seconds": round(train_wall, 6),
                 "training_process_cpu_seconds": round(train_cpu, 6),
                 "cumulative_training_wall_seconds": round(cumulative_train_wall, 6),
