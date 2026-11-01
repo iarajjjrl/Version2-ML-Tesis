@@ -97,6 +97,7 @@ def evaluar_y_seleccionar_mejor_modelo(
     ruta_lote_drift=None,
     umbral_guardrail=0.50,
     n_trials=5,
+    directorio_modelos="models",
 ):
     print("=" * 72)
     print("AUTOML MLOPS: COMPETENCIA DE CINCO MODELOS CON OPTUNA")
@@ -231,10 +232,11 @@ def evaluar_y_seleccionar_mejor_modelo(
         name=nombre_ganador,
     )
     manifiesto = _guardar_artefacto_versionado(
-        artefacto, nombre_ganador, f1_ganador, umbral_ganador
+        artefacto, nombre_ganador, f1_ganador, umbral_ganador,
+        directorio=directorio_modelos,
     )
     print(f"[DEPLOY] Artefacto versionado: {manifiesto['modelo_activo']}")
-    print("[DEPLOY] Manifiesto activo actualizado en models/active_model.json")
+    print(f"[DEPLOY] Manifiesto activo actualizado en {directorio_modelos}/active_model.json")
     return manifiesto
 
 
