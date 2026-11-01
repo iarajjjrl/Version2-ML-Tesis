@@ -98,6 +98,8 @@ def evaluar_y_seleccionar_mejor_modelo(
     umbral_guardrail=0.50,
     n_trials=5,
     directorio_modelos="models",
+    seed=42,
+    validation_mode="stratified",
 ):
     print("=" * 72)
     print("AUTOML MLOPS: COMPETENCIA DE CINCO MODELOS CON OPTUNA")
@@ -111,9 +113,18 @@ def evaluar_y_seleccionar_mejor_modelo(
     if y.nunique() != 2:
         raise ValueError("La columna 'Class' debe contener exactamente dos clases.")
 
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=0.25, random_state=42, stratify=y
-    )
+    if validation_mode == "chronological":
+        cutoff = int(len(df) * 0.75)
+        X_train, X_val = X.iloc[:cutoff], X.iloc[cutoff:]
+        y_train, y_val = y.iloc[:cutoff], y.iloc[cutoff:]
+        if y_train.nunique() != 2 or y_val.nunique() != 2:
+            raise ValueError("Partición cronológica sin ambas clases: revisar tamaños.")
+    elif validation_mode == "stratified":
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=0.25, random_state=seed, stratify=y
+        )
+    else:
+        raise ValueError(f"Modo de validación desconocido: {validation_mode}")
     positivos = int((y_train == 1).sum())
     negativos = int((y_train == 0).sum())
     if positivos == 0:
@@ -127,7 +138,7 @@ def evaluar_y_seleccionar_mejor_modelo(
             "n_estimators": trial.suggest_int("n_estimators", 80, 300),
         }
         model = XGBClassifier(
-            **params, scale_pos_weight=scale_pos_weight, random_state=42,
+            **params, scale_pos_weight=scale_pos_weight, random_state=seed,
             eval_metric="logloss", n_jobs=-1,
         )
         model.fit(X_train, y_train)
@@ -140,7 +151,7 @@ def evaluar_y_seleccionar_mejor_modelo(
             "n_estimators": trial.suggest_int("n_estimators", 80, 300),
         }
         model = LGBMClassifier(
-            **params, class_weight="balanced", random_state=42, n_jobs=-1, verbosity=-1,
+            **params, class_weight="balanced", random_state=seed, n_jobs=-1, verbosity=-1,
         )
         model.fit(X_train, y_train)
         return encontrar_umbral_optimo(model, X_val, y_val)[0]
@@ -152,7 +163,7 @@ def evaluar_y_seleccionar_mejor_modelo(
             "iterations": trial.suggest_int("iterations", 80, 300),
         }
         model = CatBoostClassifier(
-            **params, auto_class_weights="Balanced", verbose=0, random_state=42,
+            **params, auto_class_weights="Balanced", verbose=0, random_state=seed,
         )
         model.fit(X_train, y_train)
         return encontrar_umbral_optimo(model, X_val, y_val)[0]
@@ -163,7 +174,7 @@ def evaluar_y_seleccionar_mejor_modelo(
             "n_estimators": trial.suggest_int("n_estimators", 80, 300),
         }
         model = RandomForestClassifier(
-            **params, class_weight="balanced_subsample", n_jobs=-1, random_state=42,
+            **params, class_weight="balanced_subsample", n_jobs=-1, random_state=seed,
         )
         model.fit(X_train, y_train)
         return encontrar_umbral_optimo(model, X_val, y_val)[0]
@@ -175,30 +186,31 @@ def evaluar_y_seleccionar_mejor_modelo(
             "max_depth": trial.suggest_int("max_depth", 3, 15),
         }
         model = HistGradientBoostingClassifier(
-            **params, class_weight="balanced", random_state=42,
+            **params, class_weight="balanced", random_state=seed,
         )
         model.fit(X_train, y_train)
         return encontrar_umbral_optimo(model, X_val, y_val)[0]
 
     competidores = [
         ("XGBoost", XGBClassifier, objective_xgb,
-         lambda p: {**p, "scale_pos_weight": scale_pos_weight, "random_state": 42,
+         lambda p: {**p, "scale_pos_weight": scale_pos_weight, "random_state": seed,
                     "eval_metric": "logloss", "n_jobs": -1}),
         ("LightGBM", LGBMClassifier, objective_lgbm,
-         lambda p: {**p, "class_weight": "balanced", "random_state": 42,
+         lambda p: {**p, "class_weight": "balanced", "random_state": seed,
                     "n_jobs": -1, "verbosity": -1}),
         ("CatBoost", CatBoostClassifier, objective_catboost,
-         lambda p: {**p, "auto_class_weights": "Balanced", "verbose": 0, "random_state": 42}),
+         lambda p: {**p, "auto_class_weights": "Balanced", "verbose": 0, "random_state": seed}),
         ("RandomForest", RandomForestClassifier, objective_rf,
-         lambda p: {**p, "class_weight": "balanced_subsample", "n_jobs": -1, "random_state": 42}),
+         lambda p: {**p, "class_weight": "balanced_subsample", "n_jobs": -1, "random_state": seed}),
         ("HistGradientBoosting", HistGradientBoostingClassifier, objective_hist,
-         lambda p: {**p, "class_weight": "balanced", "random_state": 42}),
+         lambda p: {**p, "class_weight": "balanced", "random_state": seed}),
     ]
 
     resultados = []
-    for nombre, clase, objective, completar_params in competidores:
+    for competitor_index, (nombre, clase, objective, completar_params) in enumerate(competidores):
         print(f"\n[OPTUNA] Optimizando {nombre} ({n_trials} trials)...")
-        study = optuna.create_study(direction="maximize")
+        sampler = optuna.samplers.TPESampler(seed=seed + competitor_index)
+        study = optuna.create_study(direction="maximize", sampler=sampler)
         study.optimize(objective, n_trials=n_trials)
         modelo = clase(**completar_params(study.best_params))
         modelo.fit(X_train, y_train)
@@ -244,6 +256,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="AutoML MLOps de cinco modelos")
     parser.add_argument("--lote-drift", type=str, default=None)
     parser.add_argument("--trials", type=int, default=5)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--validation-mode", choices=("stratified", "chronological"), default="stratified")
     parser.add_argument("--umbral-guardrail", type=float, default=0.50)
     args = parser.parse_args()
     lote_drift_env = os.getenv("LOTE_DRIFT_PATH", args.lote_drift)
@@ -251,4 +265,6 @@ if __name__ == "__main__":
         ruta_lote_drift=lote_drift_env,
         umbral_guardrail=args.umbral_guardrail,
         n_trials=args.trials,
+        seed=args.seed,
+        validation_mode=args.validation_mode,
     )
