@@ -17,6 +17,7 @@ from sklearn.metrics import f1_score, precision_score, recall_score
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from src.auto_tune import evaluar_y_seleccionar_mejor_modelo  # noqa: E402
+from src.experiments.resources import ResourceSampler  # noqa: E402
 from src.experiments.policies import (  # noqa: E402
     POLICIES, approve_promotion, decide_update, execute_within_horizon,
 )
@@ -43,23 +44,32 @@ def load_model(manifest):
     return joblib.load(path)
 
 
-def train(df_train, directory, trials, seed):
+def train(df_train, directory, trials, seed, profile_resources=False):
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "training_snapshot.csv"
     start_wall = time.perf_counter()
     start_cpu = time.process_time()
     df_train.to_csv(path, index=False)
-    manifest = evaluar_y_seleccionar_mejor_modelo(
-        ruta_train=str(path),
-        n_trials=trials,
-        umbral_guardrail=0.0,  # El filtro comparativo se aplica en approve_promotion.
-        directorio_modelos=str(directory),
-        seed=seed,
-        validation_mode="chronological",
-    )
+    def fit_model():
+        return evaluar_y_seleccionar_mejor_modelo(
+            ruta_train=str(path),
+            n_trials=trials,
+            umbral_guardrail=0.0,  # El filtro se aplica en approve_promotion.
+            directorio_modelos=str(directory),
+            seed=seed,
+            validation_mode="chronological",
+        )
+
+    usage = {}
+    if profile_resources:
+        with ResourceSampler() as sampler:
+            manifest = fit_model()
+        usage = sampler.result()
+    else:
+        manifest = fit_model()
     if not manifest:
         raise RuntimeError("AutoML no generó manifiesto de candidato")
-    return manifest, time.perf_counter() - start_wall, time.process_time() - start_cpu
+    return manifest, time.perf_counter() - start_wall, time.process_time() - start_cpu, usage
 
 
 def write_csv(target, rows):
@@ -91,6 +101,8 @@ def main():
                    help="Mejora mínima de F1 en promoción frente al modelo vigente")
     p.add_argument("--min-promote-f1", type=float, default=0.0,
                    help="Suelo de F1 en promoción; 0=sin suelo en piloto")
+    p.add_argument("--profile-resources", action="store_true",
+                   help="Mide CPU del árbol de procesos y RSS máximo aproximado mediante psutil")
     p.add_argument("--train-after-final-window", action="store_true",
                    help="Reentrenar tras ventana final (solo si hay continuación operativa)")
     args = p.parse_args()
@@ -131,6 +143,7 @@ def main():
             "min_improvement": args.min_improvement,
             "min_promote_f1": args.min_promote_f1,
             "train_after_final_window": args.train_after_final_window,
+            "profile_resources": args.profile_resources,
         },
         "evaluation": "test-then-train by chronological windows",
         "promotion": "chronologically last fraction of the JUST-OBSERVED window, excluded from candidate training",
@@ -139,6 +152,7 @@ def main():
             "Class labels are assumed available at end of each window.",
             "No GitHub Actions or Docker deployment time measured.",
             "No full-system CPU/RAM/cloud billing measured.",
+            "Optional psutil process-tree CPU/RSS sampling is approximate.",
             "By default, omit re-training after final evaluated window.",
             "AutoML tuning reuses its own internal validation subset for threshold selection.",
             "Only one 8-window time series per run; further scenarios and statistical validation needed.",
@@ -150,8 +164,8 @@ def main():
     )
 
     print("[BASELINE] Entrenando el mismo modelo inicial para las tres estrategias...", flush=True)
-    initial_manifest, initial_wall, initial_cpu = train(
-        baseline, output / "initial", args.trials, args.seed
+    initial_manifest, initial_wall, initial_cpu, initial_usage = train(
+        baseline, output / "initial", args.trials, args.seed, args.profile_resources
     )
     initial_model = load_model(initial_manifest)
     initial_score = scores(initial_model, initial_holdout)
@@ -163,6 +177,7 @@ def main():
             "initial_holdout_metrics": initial_score,
             "initial_training_wall_seconds": initial_wall,
             "initial_training_process_cpu_seconds": initial_cpu,
+            "initial_training_resource_usage": initial_usage,
             "common_to_all_policies": True,
         }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
@@ -195,6 +210,7 @@ def main():
             if requested_trigger and not trigger:
                 reason = "end_of_horizon_not_retrained"
             attempt_wall = attempt_cpu = 0.0
+            attempt_usage = {}
             promoted = False
             candidate_name = ""
             candidate_f1 = incumbent_f1 = ""
@@ -210,9 +226,9 @@ def main():
                 if adaptation["Class"].nunique() != 2 or promotion["Class"].nunique() != 2:
                     raise ValueError(f"Ventana {index}: adaptación/promoción sin ambas clases")
                 candidate_data = pd.concat([history, adaptation], ignore_index=True)
-                new_manifest, attempt_wall, attempt_cpu = train(
+                new_manifest, attempt_wall, attempt_cpu, attempt_usage = train(
                     candidate_data, output / policy / f"window_{index:02d}",
-                    args.trials, args.seed
+                    args.trials, args.seed, args.profile_resources
                 )
                 challenger = load_model(new_manifest)
                 candidate_name = new_manifest["modelo_activo"]
@@ -251,6 +267,8 @@ def main():
                 "promotion_delta_f1": delta_f1,
                 "training_wall_seconds": round(attempt_wall, 6),
                 "training_process_cpu_seconds": round(attempt_cpu, 6),
+                "peak_tree_rss_mib": attempt_usage.get("peak_tree_rss_mib"),
+                "process_tree_cpu_seconds": attempt_usage.get("process_tree_cpu_seconds"),
                 "cumulative_training_wall_seconds": round(cumulative_wall, 6),
                 "cumulative_training_process_cpu_seconds": round(cumulative_cpu, 6),
                 "retrainings_cumulative": cumulative_attempts,
