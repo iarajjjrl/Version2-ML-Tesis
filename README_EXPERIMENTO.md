@@ -1,60 +1,59 @@
-# Experimento comparativo — piloto (rama experimento-comparativo)
+# EXPERIMENTO COMPARATIVO (piloto v2)
 
-Esta implementación NO altera los scripts de preparación originales, ni el directorio `data/` existente, ni los artefactos `models/`, ni dispara GitHub Actions. Crea un conjunto independiente bajo `data/experiments/`, excluido de Git.
+OBJETIVO: comparar static / periodic / event con los mismos datos, presupuesto de AutoML y un modelo inicial común.
+La comparación es LOCAL. No modifica main, los datos originales ni models/; NO mide costos de GitHub Actions ni Docker.
 
-## 1. Preparar ventanas cronológicas
+## 0. Actualizar rama local
+En VS Code PowerShell, desde Version2-ML-Tesis:
 
-Ejecutar **desde la raíz** del repositorio, con los CSV originales `train_transaction.csv` y `train_identity.csv` presentes.
+    git status -sb
+    git fetch origin
+    git merge --ff-only origin/experimento-comparativo
 
-```powershell
-.\venv\Scripts\python.exe src\experiments\prepare_windows.py --max-rows 120000 --windows 8 --seed 42
-```
+## 1. Pruebas unitarias (antes de entrenar)
 
-El script ordena por `TransactionDT`, utiliza el 50% inicial para entrenamiento, el siguiente 10% como holdout histórico de promoción y divide el 40% restante en ocho ventanas de **igual duración temporal** (no igual tamaño). Las métricas de una ventana se calculan **antes** de incorporar sus etiquetas al historial de entrenamiento. El preprocesador se ajusta exclusivamente sobre la primera partición.
+    .\venv\Scripts\python.exe -m unittest discover -s tests -p "test_experiment_policies.py" -v
 
-Para un *stress test* separado, con modificación determinística de dos características de las ventanas 3 a 8:
+## 2. Ventanas cronológicas
+Ya ejecutaste esta preparación. Si ya existen los archivos en data/experiments/chronological, NO necesitas repetirla.
 
-```powershell
-.\venv\Scripts\python.exe src\experiments\prepare_windows.py --max-rows 120000 --windows 8 --seed 42 --inject-drift-from 3 --output data\experiments\synthetic
-```
+    .\venv\Scripts\python.exe src\experiments\prepare_windows.py --max-rows 120000 --windows 8 --seed 42
 
-Esta inyección se denomina **Data Drift sintético**, no Concept Drift. Es un escenario intervenido, no evidencia de un cambio natural de comportamiento del fraude.
+Genera los 60 000 registros iniciales, un holdout histórico de 12 000 y ocho ventanas posteriores de duración equivalente en TransactionDT, sin mezcla temporal. El preprocesador usa solo el entrenamiento inicial. Los datos originales quedan intactos.
 
-## 2. Ejecutar piloto con presupuesto bajo
+## 3. Piloto simple v2 (un trial por algoritmo)
 
-```powershell
-.\venv\Scripts\python.exe src\experiments\run_comparison.py --input data\experiments\chronological --output data\experiments\results-pilot --trials 1 --every 4 --f1-trigger 0.50
-```
+    .\venv\Scripts\python.exe src\experiments\run_comparison.py --input data\experiments\chronological --output data\experiments\results-v2-simple --trials 1 --seed 42 --every 4 --f1-trigger 0.50 --consecutive-low 1 --cooldown-windows 0 --min-improvement 0.01
 
-**Importante:** aunque `--trials 1` sea un smoke test, ejecuta Optuna sobre cinco algoritmos en el entrenamiento base y en los ciclos que se activen, por lo que **puede tardar y consumir memoria/CPU**. El presupuesto final debe ser común y fijado antes de reportar resultados. No ejecutes `auto_tune.py` directamente para este experimento: ese script, con su configuración predeterminada, escribe en `models/`.
+Se evalúa cada ventana ANTES de incorporar su información. Si corresponde reentrenar, el 70% inicial de esa ventana puede entrar al entrenamiento y el 30% final sirve de validación independiente del candidato. Solo se promueve si supera el F1 del modelo vigente por al menos 0.01 en esa fracción reservada. El rendimiento real posterior se mide en ventanas siguientes, no sobre el lote de adaptación.
 
-`periodic` representa un intervalo fijo de **cuatro ventanas temporales**; si cada ventana representa un periodo equivalente, funciona como una simulación de programación regular. No demuestra la ejecución real de una tarea cron del sistema operativo.
+Se usa validación interna cronológica en AutoML; Optuna recibe una semilla y el mismo presupuesto de búsquedas para todas las políticas. No se compara con un ser humano.
 
-El modo `event` utiliza `F1 < 0.50` como disparador, **no PSI o KS**. `static` nunca reentrena. Las tres estrategias comparten exactamente un baseline inicial, misma preparación y mismo algoritmo de búsqueda. Los archivos de salida de cada corrida son independientes.
+## 4. Piloto controlado v2: persistencia + cooldown por ventanas
 
-## 3. Resultados
+    .\venv\Scripts\python.exe src\experiments\run_comparison.py --input data\experiments\chronological --output data\experiments\results-v2-controlled --trials 1 --seed 42 --every 4 --f1-trigger 0.50 --consecutive-low 2 --cooldown-windows 1 --min-improvement 0.01
 
-- `data/experiments/results-pilot/comparison.csv`: métricas por política y ventana.
-- `data/experiments/results-pilot/static.csv`, `periodic.csv`, `event.csv`: resultados separados.
-- `data/experiments/results-pilot/configuration.json`: parámetros, supuesto de etiquetas, limitaciones.
-- Modelos y CSV de entrenamiento temporales bajo `data/experiments/results-pilot/`.
+Exige dos ventanas consecutivas con F1 bajo y bloquea reentrenamiento en la siguiente ventana tras un intento. Esto NO es el cooldown real de 180 s del watcher: aquí se simulan ventanas temporales, no una ejecución real de reloj.
 
-Las columnas `f1`, `precision`, `recall`, falsos positivos/negativos, número de reentrenamientos, `training_wall_seconds` y `training_process_cpu_seconds` permiten una inspección inicial. **No interpretar `training_process_cpu_seconds` como CPU total de todo el sistema**: no captura de forma exhaustiva todas las actividades de librerías o procesos secundarios. Tampoco se ha cuantificado todavía costo monetario ni recuperación end-to-end de GitHub Actions.
+## 5. Resumir y generar gráficos
 
-Si deseas repetir una corrida, cambia `--output` (p. ej. `results-pilot-2`). El runner rechaza reutilizar una carpeta de resultados no vacía para proteger la trazabilidad.
+    .\venv\Scripts\python.exe src\experiments\summarize.py --results data\experiments\results-v2-simple
+    .\venv\Scripts\python.exe src\experiments\summarize.py --results data\experiments\results-v2-controlled
 
-## 4. Limitaciones que deben explicarse en la tesis
+Resultados: comparison.csv (todas las ventanas y decisiones), summary.csv (promedio de F1 por ventana y F1 agregado sobre transacciones), f1_by_window.png, training_time_by_window.png, configuration.json y baseline_metrics.json.
 
-1. Es un **piloto**, no una validación estadística. Faltan múltiples seeds, diferentes escenarios y análisis de sensibilidad.
-2. Se supone que **las etiquetas están disponibles al finalizar cada ventana**. Fraude real tiene retrasos de etiquetado.
-3. El AutoML reutilizado hace validación interna estratificada aleatoria; debe evaluarse una validación interna temporal antes de una publicación científica definitiva.
-4. La comparación de promoción utiliza un holdout histórico fijo; podría no reflejar la nueva distribución tras drift. Hay que mejorar el guardrail con validación independiente y representativa del periodo de actualización.
-5. No ejecuta GitHub Actions ni mide su latencia total, costo de transferencia, espera de runner o tiempo de despliegue. Esos componentes deben instrumentarse aparte si se afirma optimización de recursos *cloud*.
-6. No existe todavía una modelización real del cooldown de 180 segundos en las ventanas simuladas.
-7. El gasto inicial común de entrenar el baseline se informa por separado. Para comparar costo total, deberá sumarse de modo consistente a las tres políticas.
+## 6. Interpretación científica de los resultados
+1. Ocho ventanas, 120000 registros, la división 50/10/40, F1=0.50, intervalo de cuatro ventanas, margen 0.01, dos ventanas consecutivas y cooldown de una ventana son CONFIGURACIONES EXPERIMENTALES. Deben justificarse mediante comparación o análisis de sensibilidad; no son normas del sector financiero.
+2. Un trial por algoritmo comprueba ejecución, NO permite inferencia estadística ni afirmaciones sobre el mejor método.
+3. Cada política comparte baseline, preprocesador, dataset y código de AutoML. La única intervención es la política de actualización.
+4. Las etiquetas se suponen disponibles al final de cada ventana; el retraso de fraude real es una limitación.
+5. CPU de un proceso y segundos de entrenamiento no equivalen al costo completo de nube. Faltan monitoreo completo, uso RAM, cola de GitHub Actions, publicación y despliegue.
+6. Un holdout reciente sirve para aprobar el candidato, pero sus etiquetas contribuyeron a la condición de disparo. Solo las ventanas siguientes son una evaluación prospectiva independiente.
+7. El preprocesador de features se mantiene congelado después del entrenamiento inicial; este aspecto también limita la capacidad adaptativa.
+8. Periodic cada cuatro ventanas equivale a un calendario simulado de periodos fijos, NO prueba la ejecución real de Cron.
+9. No mezclar las cifras del piloto antiguo con los nuevos resultados: cambiaron el diseño, el corte temporal, el split interno, la semilla de Optuna y la promoción.
+10. Para el informe final: presupuesto fijo de búsqueda mayor, múltiples semillas y escenarios, análisis de sensibilidad, consumo real y pruebas estadísticas con unidades de análisis independientes.
 
-**No mezclar las cifras de este piloto con la antigua demostración XGBoost → CatBoost sobre el mismo lote reentrenado.** Es un protocolo de evaluación diferente, con holdout temporal y ventanas futuras.
+Si la carpeta --output ya existe y no está vacía, usa un nombre NUEVO. Nunca borres el resultado del piloto anterior. No ejecutar auto_tune.py en forma aislada para el experimento, porque su configuración predeterminada escribe en models/.
 
-## 5. Relación con la arquitectura
-
-La implementación existente con Docker y GitHub Actions permanece funcional en `main`. Este piloto se enfoca en responder la pregunta científica de **cuándo conviene reentrenar**. Una vez revisada la comparabilidad de resultados, el siguiente trabajo consiste en medir también el pipeline real (monitoreo, búsqueda, entrenamiento, publicación, validación y actualización).
+SIGUIENTE PASO: pruebas unitarias, comparación simple, resumen, comparación controlada, resumen y decisión explícita de qué políticas/umbrales llevar a evaluación definitiva.
