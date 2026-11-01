@@ -25,3 +25,7 @@ models/*.pkl
 # PERMITIR el preprocesador (crítico para evitar Data Leakage)
 !models/preprocessor.pkl
 # Nota: models/active_model.json se subirá normalmente sin restricciones.
+
+# Resultados y CSV de experimentos locales
+.venv/
+data/experiments/
