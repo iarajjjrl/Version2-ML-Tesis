@@ -47,6 +47,18 @@ def main():
                 group["training_process_cpu_seconds"].sum()),
             "monitor_wall_seconds_total": float(group["monitor_wall_seconds"].sum()),
         })
+    # Datos opcionales: el usuario activa --profile-resources y tiene psutil.
+    if {"peak_tree_rss_mib", "process_tree_cpu_seconds"}.issubset(df.columns):
+        for record in summary:
+            group = df[df["policy"] == record["policy"]]
+            rss = pd.to_numeric(group["peak_tree_rss_mib"], errors="coerce")
+            cpu = pd.to_numeric(group["process_tree_cpu_seconds"], errors="coerce")
+            record["peak_tree_rss_mib_max"] = (
+                float(rss.max()) if rss.notna().any() else None
+            )
+            record["process_tree_cpu_seconds_total"] = (
+                float(cpu.sum()) if cpu.notna().any() else None
+            )
     summary_df = pd.DataFrame(summary)
     summary_df.to_csv(folder / "summary.csv", index=False)
     print(summary_df.to_string(index=False))
