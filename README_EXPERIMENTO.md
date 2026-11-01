@@ -57,3 +57,38 @@ Resultados: comparison.csv (todas las ventanas y decisiones), summary.csv (prome
 Si la carpeta --output ya existe y no está vacía, usa un nombre NUEVO. Nunca borres el resultado del piloto anterior. No ejecutar auto_tune.py en forma aislada para el experimento, porque su configuración predeterminada escribe en models/.
 
 SIGUIENTE PASO: pruebas unitarias, comparación simple, resumen, comparación controlada, resumen y decisión explícita de qué políticas/umbrales llevar a evaluación definitiva.
+
+
+## 7. Revisión del cierre temporal (v3)
+
+Un experimento que evalúa solo ocho ventanas NO debería sumar al costo un
+reentrenamiento posterior a la ventana 8, porque ninguna ventana posterior
+permite medir su aporte. Desde el commit de revisión de horizonte, el runner
+omite esa actualización final por defecto y registra motivo
+"end_of_horizon_not_retrained".
+
+Si se pretende medir un sistema operativo que CONTINUARÁ recibiendo más
+ventanas, puede añadirse --train-after-final-window, pero ese tiempo debe
+interpretarse como mantenimiento para el horizonte siguiente, no como costo
+de servir las ocho ventanas ya evaluadas.
+
+**No mezclar los costos de results-v2-* con results-v3-*.** Para el análisis
+comparativo de horizonte finito ejecuta nuevas corridas:
+
+    .\venv\Scripts\python.exe src\experiments\run_comparison.py --input data\experiments\chronological --output data\experiments\results-v3-simple --trials 1 --seed 42 --every 4 --f1-trigger 0.50 --consecutive-low 1 --cooldown-windows 0 --min-improvement 0.01
+
+    .\venv\Scripts\python.exe src\experiments\run_comparison.py --input data\experiments\chronological --output data\experiments\results-v3-controlled --trials 1 --seed 42 --every 4 --f1-trigger 0.50 --consecutive-low 2 --cooldown-windows 1 --min-improvement 0.01
+
+    .\venv\Scripts\python.exe src\experiments\summarize.py --results data\experiments\results-v3-simple
+    .\venv\Scripts\python.exe src\experiments\summarize.py --results data\experiments\results-v3-controlled
+
+## 8. Sensibilidad del costo por errores de fraude
+
+Permite ensayar razones hipotéticas costo(FN)/costo(FP), por ejemplo 1, 2,
+5, 10, 20. Son UNIDADES RELATIVAS, no tarifas bancarias ni soles.
+
+    .\venv\Scripts\python.exe src\experiments\error_cost_sensitivity.py --results data\experiments\results-v3-simple
+    .\venv\Scripts\python.exe src\experiments\error_cost_sensitivity.py --results data\experiments\results-v3-controlled
+
+Usar error_cost_sensitivity.csv solo para explorar el intercambio entre
+detección de fraude y falsas alarmas; no afirmar ahorro económico real.
