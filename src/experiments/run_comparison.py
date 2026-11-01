@@ -91,6 +91,8 @@ def main():
                    help="Mejora mínima de F1 en promoción frente al modelo vigente")
     p.add_argument("--min-promote-f1", type=float, default=0.0,
                    help="Suelo de F1 en promoción; 0=sin suelo en piloto")
+    p.add_argument("--train-after-final-window", action="store_true",
+                   help="Reentrenar tras ventana final (solo si hay continuación operativa)")
     args = p.parse_args()
     if args.trials < 1 or args.every < 1 or args.consecutive_low < 1 or args.cooldown_windows < 0:
         p.error("Trials, frecuencia y consecutivas deben ser positivos; cooldown >= 0")
@@ -128,6 +130,7 @@ def main():
             "promotion_fraction": args.promotion_fraction,
             "min_improvement": args.min_improvement,
             "min_promote_f1": args.min_promote_f1,
+            "train_after_final_window": args.train_after_final_window,
         },
         "evaluation": "test-then-train by chronological windows",
         "promotion": "chronologically last fraction of the JUST-OBSERVED window, excluded from candidate training",
@@ -136,6 +139,7 @@ def main():
             "Class labels are assumed available at end of each window.",
             "No GitHub Actions or Docker deployment time measured.",
             "No full-system CPU/RAM/cloud billing measured.",
+            "By default, omit re-training after final evaluated window.",
             "AutoML tuning reuses its own internal validation subset for threshold selection.",
             "Only one 8-window time series per run; further scenarios and statistical validation needed.",
             "Initial preprocessing statistics remain fixed even after model retraining.",
@@ -164,6 +168,7 @@ def main():
     )
 
     rows = []
+    final_window_index = windows[-1][0]
     for policy in POLICIES:
         print(f"\n[POLICY] {policy}", flush=True)
         history = baseline.copy()
@@ -178,11 +183,16 @@ def main():
             t0 = time.perf_counter()
             metric = scores(model, frame)
             monitor_wall = time.perf_counter() - t0
-            trigger, low_streak, reason = decide_update(
+            requested_trigger, low_streak, reason = decide_update(
                 policy, index, metric["f1"], args.f1_trigger,
                 args.every, args.consecutive_low, args.cooldown_windows,
                 low_streak, last_trigger,
             )
+            trigger = requested_trigger and (
+                args.train_after_final_window or index != final_window_index
+            )
+            if requested_trigger and not trigger:
+                reason = "end_of_horizon_not_retrained"
             attempt_wall = attempt_cpu = 0.0
             promoted = False
             candidate_name = ""
@@ -229,6 +239,7 @@ def main():
                 **metric,
                 "monitor_wall_seconds": round(monitor_wall, 6),
                 "trigger": trigger,
+                "requested_trigger": requested_trigger,
                 "trigger_reason": reason,
                 "candidate_promoted": promoted,
                 "model_before_window": before,
