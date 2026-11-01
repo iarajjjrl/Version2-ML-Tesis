@@ -6,6 +6,7 @@ Cada corrida usa una carpeta independiente; se reanudan corridas completas.
 import argparse
 import json
 import platform
+from importlib import metadata
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -15,6 +16,18 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 EXPERIMENTS = ROOT / "src" / "experiments"
+
+
+def package_versions():
+    names = ("pandas", "numpy", "scikit-learn", "optuna",
+             "xgboost", "lightgbm", "catboost", "psutil")
+    result = {}
+    for name in names:
+        try:
+            result[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            result[name] = None
+    return result
 
 
 def run_logged(cmd, logfile):
@@ -93,6 +106,7 @@ def main():
             "python_version": sys.version,
             "platform": platform.platform(),
             "git_commit": git_hash,
+            "package_versions": package_versions(),
             "notes": [
                 "Seeds de AutoML distintas, mismo dataset/ventanas; NO son réplicas independientes de datos.",
                 "Escenario sintético altera covariables, NO garantiza concept drift.",
