@@ -1,193 +1,251 @@
-"""Comparación piloto: static vs periodic (ventanas de tiempo) vs event.
+"""Piloto reproducible de mantenimiento de modelos: static, periodic y event.
 
-Ejecutar desde la raíz del repositorio (véase README_EXPERIMENTO.md).
-Este runner es LOCAL y no dispara GitHub Actions: mide la política y el AutoML
-compartido. El costo de CI/CD real debe cuantificarse en una fase separada.
+Evalúa cada ventana futura ANTES de usar sus etiquetas para reentrenar.
+Comparación local: NO mide despliegue ni costos de GitHub Actions.
 """
 import argparse
 import csv
 import json
-import os
-import shutil
 import sys
 import time
 from pathlib import Path
 
 import joblib
-import numpy as np
 import pandas as pd
 from sklearn.metrics import f1_score, precision_score, recall_score
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 from src.auto_tune import evaluar_y_seleccionar_mejor_modelo  # noqa: E402
-
-POLICIES = ("static", "periodic", "event")
+from src.experiments.policies import (  # noqa: E402
+    POLICIES, approve_promotion, decide_update,
+)
 
 
 def scores(model, frame):
     x = frame.drop(columns=["Class"])
     y = frame["Class"].astype(int)
-    predicted = model.predict(x)
+    pred = model.predict(x)
     return {
-        "f1": float(f1_score(y, predicted, zero_division=0)),
-        "precision": float(precision_score(y, predicted, zero_division=0)),
-        "recall": float(recall_score(y, predicted, zero_division=0)),
-        "false_negatives": int(((y == 1) & (predicted == 0)).sum()),
-        "false_positives": int(((y == 0) & (predicted == 1)).sum()),
+        "f1": float(f1_score(y, pred, zero_division=0)),
+        "precision": float(precision_score(y, pred, zero_division=0)),
+        "recall": float(recall_score(y, pred, zero_division=0)),
+        "false_negatives": int(((y == 1) & (pred == 0)).sum()),
+        "false_positives": int(((y == 0) & (pred == 1)).sum()),
+        "positives": int((y == 1).sum()),
     }
 
 
 def load_model(manifest):
-    return joblib.load(ROOT / manifest["modelo_activo"] if not Path(manifest["modelo_activo"]).is_absolute()
-                       else Path(manifest["modelo_activo"]))
+    path = Path(manifest["modelo_activo"])
+    if not path.is_absolute():
+        path = ROOT / path
+    return joblib.load(path)
 
 
-def train(df_train, directory, trials):
+def train(df_train, directory, trials, seed):
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / "training_snapshot.csv"
-    df_train.to_csv(path, index=False)
     start_wall = time.perf_counter()
     start_cpu = time.process_time()
+    df_train.to_csv(path, index=False)
     manifest = evaluar_y_seleccionar_mejor_modelo(
         ruta_train=str(path),
         n_trials=trials,
-        umbral_guardrail=0.0,
+        umbral_guardrail=0.0,  # El filtro comparativo se aplica en approve_promotion.
         directorio_modelos=str(directory),
+        seed=seed,
+        validation_mode="chronological",
     )
-    if manifest is None:
-        raise RuntimeError("AutoML no generó un manifiesto")
-    # La ruta en el manifiesto es relativa al working dir; resolverla sin tocar models/.
+    if not manifest:
+        raise RuntimeError("AutoML no generó manifiesto de candidato")
     return manifest, time.perf_counter() - start_wall, time.process_time() - start_cpu
 
 
-def save_csv(path, rows):
+def write_csv(target, rows):
     if not rows:
         return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as fp:
-        writer = csv.DictWriter(fp, fieldnames=list(rows[0]))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input", type=Path, default=ROOT / "data/experiments/chronological")
-    parser.add_argument("--output", type=Path, default=ROOT / "data/experiments/results")
-    parser.add_argument("--trials", type=int, default=1, help="Trials por algoritmo; 1 para smoke test")
-    parser.add_argument("--every", type=int, default=4,
-                        help="Frecuencia periódica en ventanas temporales iguales")
-    parser.add_argument("--f1-trigger", type=float, default=0.50)
-    parser.add_argument("--min-improvement", type=float, default=0.0)
-    args = parser.parse_args()
-    if args.trials < 1 or args.every < 1:
-        parser.error("--trials y --every deben ser positivos")
-    if not 0 <= args.f1_trigger <= 1 or not 0 <= args.min_improvement <= 1:
-        parser.error("Los valores de F1 deben estar entre 0 y 1")
-    input_dir = args.input.resolve()
-    output_dir = args.output.resolve()
-    config = json.loads((input_dir / "manifest.json").read_text(encoding="utf-8"))
-    train_initial = pd.read_csv(input_dir / "baseline_train.csv")
-    holdout = pd.read_csv(input_dir / "promotion_holdout.csv")
-    windows = [(w["window"], pd.read_csv(input_dir / w["file"])) for w in config["windows"]]
-    features = list(train_initial.columns)
-    for name, frame in [("holdout", holdout)] + [(f"window {i}", f) for i, f in windows]:
-        if list(frame.columns) != features:
-            raise ValueError(f"Esquema incompatible en {name}")
-    if output_dir.exists() and any(output_dir.iterdir()):
-        raise FileExistsError(f"Salida no vacía: {output_dir}; usa --output distinto")
-    output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "configuration.json").write_text(json.dumps({
-        "input_manifest": config,
-        "trials": args.trials,
-        "every": args.every,
-        "f1_trigger": args.f1_trigger,
-        "min_improvement": args.min_improvement,
-        "protocol": "prequential: evaluate future window before adding labels to training",
-        "limitations": [
-            "Labels immediately available after each window",
-            "No actual GitHub Actions latency/cost measured",
-            "Promotion holdout is historic, not independently refreshed over time",
-            "AutoML internal train/validation uses stratified random split",
-            "Single pilot run; no statistical inference",
-        ],
-    }, indent=2, ensure_ascii=False), encoding="utf-8")
+    p = argparse.ArgumentParser(description="Comparación piloto de políticas MLOps")
+    p.add_argument("--input", type=Path, default=ROOT / "data/experiments/chronological")
+    p.add_argument("--output", type=Path, default=ROOT / "data/experiments/results-v2")
+    p.add_argument("--trials", type=int, default=1)
+    p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--every", type=int, default=4,
+                   help="Periodicidad en ventanas de duración temporal equivalente")
+    p.add_argument("--f1-trigger", type=float, default=0.50)
+    p.add_argument("--consecutive-low", type=int, default=1,
+                   help="Ventanas consecutivas con F1 bajo antes de disparar")
+    p.add_argument("--cooldown-windows", type=int, default=0,
+                   help="Ventanas de espera tras cada intento de reentrenamiento")
+    p.add_argument("--promotion-fraction", type=float, default=0.30,
+                   help="Última fracción de ventana para evaluar promoción independiente")
+    p.add_argument("--min-improvement", type=float, default=0.01,
+                   help="Mejora mínima de F1 en promoción frente al modelo vigente")
+    p.add_argument("--min-promote-f1", type=float, default=0.0,
+                   help="Suelo de F1 en promoción; 0=sin suelo en piloto")
+    args = p.parse_args()
+    if args.trials < 1 or args.every < 1 or args.consecutive_low < 1 or args.cooldown_windows < 0:
+        p.error("Trials, frecuencia y consecutivas deben ser positivos; cooldown >= 0")
+    if not all(0 <= x <= 1 for x in
+               (args.f1_trigger, args.min_improvement, args.min_promote_f1)):
+        p.error("F1 y mejora deben estar entre 0 y 1")
+    if not 0.1 <= args.promotion_fraction <= 0.5:
+        p.error("promotion-fraction debe ser entre 0.10 y 0.50")
 
-    print("[BASELINE] Entrenando UNA vez para las tres políticas...")
-    common_manifest, base_wall, base_cpu = train(
-        train_initial, output_dir / "initial", args.trials
+    source = args.input.resolve()
+    output = args.output.resolve()
+    if output.exists() and any(output.iterdir()):
+        raise FileExistsError(f"Carpeta de salida no vacía: {output}")
+    config = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+    baseline = pd.read_csv(source / "baseline_train.csv")
+    initial_holdout = pd.read_csv(source / "promotion_holdout.csv")
+    windows = [(w["window"], pd.read_csv(source / w["file"]))
+               for w in config["windows"]]
+    columns = list(baseline.columns)
+    for name, frame in [("holdout", initial_holdout)] + [
+        (f"window {i}", data) for i, data in windows
+    ]:
+        if list(frame.columns) != columns:
+            raise ValueError(f"Esquema de características inconsistente en {name}")
+        if frame["Class"].nunique() != 2:
+            raise ValueError(f"El lote {name} no contiene ambas clases")
+    output.mkdir(parents=True, exist_ok=True)
+    details = {
+        "source_manifest": config,
+        "parameters": {
+            "seed": args.seed, "trials": args.trials, "every": args.every,
+            "f1_trigger": args.f1_trigger,
+            "consecutive_low": args.consecutive_low,
+            "cooldown_windows": args.cooldown_windows,
+            "promotion_fraction": args.promotion_fraction,
+            "min_improvement": args.min_improvement,
+            "min_promote_f1": args.min_promote_f1,
+        },
+        "evaluation": "test-then-train by chronological windows",
+        "promotion": "chronologically last fraction of the JUST-OBSERVED window, excluded from candidate training",
+        "timing": "local elapsed seconds and own-process CPU seconds; excludes CI/CD, cloud, monitoring overhead",
+        "limitations": [
+            "Class labels are assumed available at end of each window.",
+            "No GitHub Actions or Docker deployment time measured.",
+            "No full-system CPU/RAM/cloud billing measured.",
+            "AutoML tuning reuses its own internal validation subset for threshold selection.",
+            "Only one 8-window time series per run; further scenarios and statistical validation needed.",
+            "Initial preprocessing statistics remain fixed even after model retraining.",
+        ],
+    }
+    (output / "configuration.json").write_text(
+        json.dumps(details, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
-    base_model = load_model(common_manifest)
-    base_score = scores(base_model, holdout)
-    print(f"[BASELINE] F1 holdout histórico={base_score['f1']:.4f}; "
-          f"tiempo={base_wall:.1f}s")
+
+    print("[BASELINE] Entrenando el mismo modelo inicial para las tres estrategias...", flush=True)
+    initial_manifest, initial_wall, initial_cpu = train(
+        baseline, output / "initial", args.trials, args.seed
+    )
+    initial_model = load_model(initial_manifest)
+    initial_score = scores(initial_model, initial_holdout)
+    print(f"[BASELINE] F1 holdout histórico={initial_score['f1']:.4f}; "
+          f"costo inicial={initial_wall:.2f}s (común a todas)", flush=True)
+
     rows = []
     for policy in POLICIES:
         print(f"\n[POLICY] {policy}", flush=True)
-        history = train_initial.copy()
-        model = base_model
-        active_algorithm = common_manifest["modelo_activo"]
-        cumulative_train_wall = 0.0
-        cumulative_train_cpu = 0.0
-        n_retrains = 0
-        for window_index, window in windows:
-            model_used_this_window = active_algorithm
-            start_eval = time.perf_counter()
-            metrics = scores(model, window)
-            eval_wall = time.perf_counter() - start_eval
-            event = policy == "event" and metrics["f1"] < args.f1_trigger
-            periodic = policy == "periodic" and window_index % args.every == 0
-            triggered = event or periodic
-            # Se evalúa primero sobre datos no vistos; luego quedan disponibles sus etiquetas.
-            history = pd.concat([history, window], ignore_index=True)
-            train_wall, train_cpu, promoted = 0.0, 0.0, False
-            candidate_algorithm, candidate_holdout_f1 = "", ""
-            if triggered:
-                n_retrains += 1
-                candidate_manifest, train_wall, train_cpu = train(
-                    history, output_dir / policy / f"window_{window_index:02d}",
-                    args.trials,
+        history = baseline.copy()
+        model = initial_model
+        active_name = initial_manifest["modelo_activo"]
+        last_trigger = None
+        low_streak = 0
+        cumulative_wall = cumulative_cpu = 0.0
+        cumulative_attempts = cumulative_promotions = 0
+        for index, frame in windows:
+            before = active_name
+            t0 = time.perf_counter()
+            metric = scores(model, frame)
+            monitor_wall = time.perf_counter() - t0
+            trigger, low_streak, reason = decide_update(
+                policy, index, metric["f1"], args.f1_trigger,
+                args.every, args.consecutive_low, args.cooldown_windows,
+                low_streak, last_trigger,
+            )
+            attempt_wall = attempt_cpu = 0.0
+            promoted = False
+            candidate_name = ""
+            candidate_f1 = incumbent_f1 = ""
+            delta_f1 = ""
+            if trigger:
+                last_trigger = index
+                cumulative_attempts += 1
+                split = int(len(frame) * (1.0 - args.promotion_fraction))
+                # Última sección CRONOLÓGICA de esta ventana no entra al ajuste
+                # ni a Optuna del candidato, pero puede usarse en ciclos futuros.
+                adaptation = frame.iloc[:split].copy()
+                promotion = frame.iloc[split:].copy()
+                if adaptation["Class"].nunique() != 2 or promotion["Class"].nunique() != 2:
+                    raise ValueError(f"Ventana {index}: adaptación/promoción sin ambas clases")
+                candidate_data = pd.concat([history, adaptation], ignore_index=True)
+                new_manifest, attempt_wall, attempt_cpu = train(
+                    candidate_data, output / policy / f"window_{index:02d}",
+                    args.trials, args.seed
                 )
-                candidate = load_model(candidate_manifest)
-                candidate_algorithm = candidate_manifest["modelo_activo"]
-                candidate_holdout_f1 = scores(candidate, holdout)["f1"]
-                incumbent_holdout_f1 = scores(model, holdout)["f1"]
-                # Guardrail experimental adicional: debe superar al activo en holdout.
-                # El holdout histórico no se usa para medir desempeño futuro del sistema.
-                promoted = candidate_holdout_f1 >= incumbent_holdout_f1 + args.min_improvement
+                challenger = load_model(new_manifest)
+                candidate_name = new_manifest["modelo_activo"]
+                candidate_f1 = scores(challenger, promotion)["f1"]
+                incumbent_f1 = scores(model, promotion)["f1"]
+                delta_f1 = candidate_f1 - incumbent_f1
+                promoted = approve_promotion(
+                    candidate_f1, incumbent_f1,
+                    args.min_improvement, args.min_promote_f1
+                )
                 if promoted:
-                    model = candidate
-                    active_algorithm = candidate_algorithm
-                cumulative_train_wall += train_wall
-                cumulative_train_cpu += train_cpu
+                    model = challenger
+                    active_name = candidate_name
+                    cumulative_promotions += 1
+                cumulative_wall += attempt_wall
+                cumulative_cpu += attempt_cpu
+
+            # Siempre después de evaluar y de decidir. En una ventana futura
+            # todos los datos observados quedan disponibles para cada política.
+            history = pd.concat([history, frame], ignore_index=True)
             row = {
-                "policy": policy,
-                "window": window_index,
-                "records": len(window),
-                "synthetic_shift": config["windows"][window_index - 1]["synthetic_shift"],
-                **metrics,
-                "eval_wall_seconds": round(eval_wall, 6),
-                "retraining_triggered": triggered,
+                "policy": policy, "window": index,
+                "records": len(frame),
+                "synthetic_shift": config["windows"][index - 1]["synthetic_shift"],
+                **metric,
+                "monitor_wall_seconds": round(monitor_wall, 6),
+                "trigger": trigger,
+                "trigger_reason": reason,
                 "candidate_promoted": promoted,
-                "candidate_model": candidate_algorithm,
-                "candidate_holdout_f1": candidate_holdout_f1,
-                "active_model_for_window": model_used_this_window,
-                "active_model_after_window": active_algorithm,
-                "training_wall_seconds": round(train_wall, 6),
-                "training_process_cpu_seconds": round(train_cpu, 6),
-                "cumulative_training_wall_seconds": round(cumulative_train_wall, 6),
-                "cumulative_training_process_cpu_seconds": round(cumulative_train_cpu, 6),
-                "retrainings_cumulative": n_retrains,
+                "model_before_window": before,
+                "model_after_window": active_name,
+                "candidate_model": candidate_name,
+                "incumbent_promotion_f1": incumbent_f1,
+                "candidate_promotion_f1": candidate_f1,
+                "promotion_delta_f1": delta_f1,
+                "training_wall_seconds": round(attempt_wall, 6),
+                "training_process_cpu_seconds": round(attempt_cpu, 6),
+                "cumulative_training_wall_seconds": round(cumulative_wall, 6),
+                "cumulative_training_process_cpu_seconds": round(cumulative_cpu, 6),
+                "retrainings_cumulative": cumulative_attempts,
+                "promotions_cumulative": cumulative_promotions,
             }
             rows.append(row)
-            print(f" {window_index}: F1={metrics['f1']:.4f}, "
-                  f"trigger={triggered}, promote={promoted}, "
-                  f"train={train_wall:.1f}s", flush=True)
-        save_csv(output_dir / f"{policy}.csv", [r for r in rows if r["policy"] == policy])
-    save_csv(output_dir / "comparison.csv", rows)
-    print(f"\n[OK] Resultados piloto en: {output_dir}")
-    print("[NOTA] No afirmar ahorro cloud ni superioridad estadística con este piloto.")
+            print(f"  ventana={index} F1={metric['f1']:.4f}, "
+                  f"retraining={trigger}, promote={promoted}, "
+                  f"reason={reason}, train={attempt_wall:.1f}s", flush=True)
+
+        write_csv(output / f"{policy}.csv", [
+            r for r in rows if r["policy"] == policy
+        ])
+    write_csv(output / "comparison.csv", rows)
+    print(f"\n[OK] {output / 'comparison.csv'}")
+    print("[AVISO] Piloto: sin evidencia todavía de ahorro cloud ni superioridad estadística.")
 
 
 if __name__ == "__main__":
