@@ -129,19 +129,29 @@ def main():
             run_dir = output / "runs" / scenario / f"seed_{seed}"
             summary = run_dir / "summary.csv"
             if not summary.exists():
-                cmd = [
-                    sys.executable, str(EXPERIMENTS / "run_comparison.py"),
-                    "--input", str(input_dir), "--output", str(run_dir),
-                    "--trials", str(args.trials), "--seed", str(seed),
-                    "--every", str(args.every),
-                    "--f1-trigger", str(args.f1_trigger),
-                    "--consecutive-low", str(args.consecutive_low),
-                    "--cooldown-windows", str(args.cooldown_windows),
-                    "--min-improvement", str(args.min_improvement),
-                ]
-                if args.profile_resources:
-                    cmd.append("--profile-resources")
-                run_logged(cmd, output / "logs" / f"fit_{scenario}_{seed}.log")
+                if not (run_dir / "comparison.csv").exists():
+                    if run_dir.exists() and any(run_dir.iterdir()):
+                        # Se conserva la ejecución interrumpida, sin borrarla.
+                        attempt = 1
+                        while (run_dir.parent /
+                               f"seed_{seed}_incomplete_{attempt}").exists():
+                            attempt += 1
+                        backup = run_dir.parent / f"seed_{seed}_incomplete_{attempt}"
+                        run_dir.rename(backup)
+                        print(f"[RECOVERY] Corrida incompleta preservada: {backup}")
+                    cmd = [
+                        sys.executable, str(EXPERIMENTS / "run_comparison.py"),
+                        "--input", str(input_dir), "--output", str(run_dir),
+                        "--trials", str(args.trials), "--seed", str(seed),
+                        "--every", str(args.every),
+                        "--f1-trigger", str(args.f1_trigger),
+                        "--consecutive-low", str(args.consecutive_low),
+                        "--cooldown-windows", str(args.cooldown_windows),
+                        "--min-improvement", str(args.min_improvement),
+                    ]
+                    if args.profile_resources:
+                        cmd.append("--profile-resources")
+                    run_logged(cmd, output / "logs" / f"fit_{scenario}_{seed}.log")
                 run_logged(
                     [sys.executable, str(EXPERIMENTS / "summarize.py"),
                      "--results", str(run_dir)],
