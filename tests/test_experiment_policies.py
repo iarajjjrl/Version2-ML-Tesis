@@ -3,7 +3,7 @@
 Ejecutar: python -m unittest discover -s tests -p "test_experiment_policies.py"
 """
 import unittest
-from src.experiments.policies import approve_promotion, decide_update
+from src.experiments.policies import (approve_promotion, decide_update, execute_within_horizon)
 
 
 class PolicyTests(unittest.TestCase):
@@ -39,6 +39,12 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(approve_promotion(.49, .50, .01, 0))
         self.assertFalse(approve_promotion(.509, .50, .01, 0))
         self.assertTrue(approve_promotion(.52, .50, .01, 0))
+
+    def test_final_window_not_retrained_without_future(self):
+        self.assertTrue(execute_within_horizon(True, 4, 8))
+        self.assertFalse(execute_within_horizon(True, 8, 8))
+        self.assertTrue(execute_within_horizon(True, 8, 8, True))
+        self.assertFalse(execute_within_horizon(False, 8, 8, True))
 
     def test_promotion_enforces_minimum_f1(self):
         self.assertFalse(approve_promotion(.42, .40, .01, .50))
