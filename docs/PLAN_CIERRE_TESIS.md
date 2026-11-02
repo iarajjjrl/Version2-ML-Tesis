@@ -15,6 +15,14 @@ Contacto de Ingeniería de Sistemas: gytsistemas@ulima.edu.pe
 
 **Por confirmar con universidad:** elegibilidad actual del alumno, vigencia de procedimiento, reconocimiento del artículo desarrollado en Seminario de Investigación II, asesor/especialista, documentos, plazos y sustentación. No extrapolar automáticamente reglamentos de promociones anteriores.
 
+## 0.1. Auditoría del manuscrito y rúbrica del curso (BLOQUEANTE)
+
+Se revisó una versión anterior del artículo FULL_SEM2_Ian_Ramírez(1).docx y el reporte del evaluador de Seminario de Investigación II (octubre 2026). Hay afirmaciones que requieren rectificación o evidencia antes de presentar: significancia t de Student sin prueba corroborada, reducción de costos cloud sin medición completa, Concept Drift tratado como alteración de covariables y cumplimiento bancario atribuido solo a SHA256. **No reutilizar automáticamente sus conclusiones.**
+
+Plan detallado: docs/OBSERVACIONES_CRITICAS_MANUSCRITO.md.
+
+Adicionalmente, conservar correspondencia entre el objetivo original sobre MLOps, calidad y mantenibilidad y el comparador de políticas. No convertir silenciosamente la tesis en un simple benchmark de clasificadores; incluir validación operacional y contraste MLOps/DevOps.
+
 ## 1. Qué afirmamos / qué todavía no demostramos
 
 **Demostrado técnicamente por ejecución local de scripts:**
