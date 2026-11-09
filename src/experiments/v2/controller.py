@@ -110,6 +110,11 @@ class MaintenanceController:
         elif s.policy == "periodic":
             due = window % s.every == 0
             reason = "periodic_due" if due else "periodic_not_due"
+        elif reviewed and approved:
+            # El F1 de esta ventana corresponde al incumbente, no al candidato
+            # recién promovido. No acumularlo como deterioro del modelo nuevo.
+            self.low_streak = 0
+            due, reason = False, "new_model_not_evaluated_until_next_window"
         else:
             self.low_streak = self.low_streak + 1 if observed_f1 < s.f1_trigger else 0
             due = self.low_streak >= s.consecutive_low
