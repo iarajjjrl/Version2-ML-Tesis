@@ -168,3 +168,15 @@ def test_raw_windows_original_is_not_mutated():
     before = raw.copy(deep=True)
     build_raw_windows(raw, max_rows=1200, n_windows=4, seed=1, inject_drift_from=3)
     pd.testing.assert_frame_equal(raw, before)
+
+
+def test_promoting_event_candidate_resets_old_model_low_streak():
+    c = MaintenanceController(PolicySettings("event", consecutive_low=2), "base")
+    c.complete_window(1, .3)
+    assert c.complete_window(2, .3).execute
+    c.register_candidate(2, "updated")
+    reviewed = c.complete_window(3, .3, candidate_f1=.8, incumbent_f1=.3)
+    assert reviewed.candidate_approved and c.low_streak == 0
+    assert reviewed.reason == "new_model_not_evaluated_until_next_window"
+    assert not c.complete_window(4, .3).execute
+    assert c.complete_window(5, .3).execute
