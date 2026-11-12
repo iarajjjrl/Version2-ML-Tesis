@@ -76,3 +76,21 @@ def test_runner_preserves_history_and_isolates_outputs(tmp_path):
     # Nunca sobrescribe una ejecución existente.
     with pytest.raises(FileExistsError):
         run_comparison(raw, out, seed=42, trials=1)
+
+
+def test_disjoint_epochs_are_chronological_and_do_not_mutate_source(tmp_path):
+    from src.experiments.v2.prepare_epochs import partition_epochs, prepare_epochs
+    source = fake_ieee(3000)
+    before = source.copy(deep=True)
+    epochs = partition_epochs(source, count=3)
+    assert len(epochs) == 3
+    assert sum(len(x) for x in epochs) == len(source)
+    assert epochs[0].TransactionDT.max() < epochs[1].TransactionDT.min()
+    assert epochs[1].TransactionDT.max() < epochs[2].TransactionDT.min()
+    result = prepare_epochs(source, tmp_path / "epochs", epochs=3,
+                            max_rows=1000, windows=4, seed=42)
+    assert result["n_epochs"] == 3
+    for epoch in range(1, 4):
+        for scenario in ("natural", "synthetic"):
+            assert (tmp_path / "epochs" / f"epoch_{epoch:02d}" / scenario / "manifest.json").exists()
+    pd.testing.assert_frame_equal(source, before)
