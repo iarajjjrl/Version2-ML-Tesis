@@ -52,14 +52,16 @@ def _read_inputs(input_dir):
     return baseline, holdout, windows, manifest, features
 
 
-def _train(raw_history, features, trials, seed, *, profile):
+def _train(raw_history, features, trials, seed, *, profile, adaptation_window=None):
     start = time.perf_counter()
     if profile:
         with ResourceSampler() as resources:
-            model = train_candidate(raw_history, features=features, trials=trials, seed=seed)
+            model = train_candidate(raw_history, features=features, trials=trials, seed=seed,
+                                    adaptation_window=adaptation_window)
         usage = resources.result()
     else:
-        model = train_candidate(raw_history, features=features, trials=trials, seed=seed)
+        model = train_candidate(raw_history, features=features, trials=trials, seed=seed,
+                                    adaptation_window=adaptation_window)
         usage = {}
     return model, time.perf_counter() - start, usage
 
@@ -137,11 +139,12 @@ def run_comparison(raw_dir, out_dir, *, seed=42, trials=3, every=4,
             }
             # Solo datos observados hasta k. k+1 NO entra en este candidato.
             if decision.execute:
-                attempt_history = pd.concat([*observed, window], ignore_index=True)
+                attempt_history = pd.concat(observed, ignore_index=True)
                 candidate_id = f"{policy}_candidate_after_{window_index:02d}"
                 try:
                     challenger, elapsed, usage = _train(attempt_history, features,
-                                                        trials, seed, profile=profile)
+                                                        trials, seed, profile=profile,
+                                                        adaptation_window=window)
                     versions[candidate_id] = challenger
                     controller.register_candidate(window_index, candidate_id)
                     saved = save_bundle(challenger, models_dir / (candidate_id + ".pkl"))
@@ -191,7 +194,8 @@ def run_comparison(raw_dir, out_dir, *, seed=42, trials=3, every=4,
         "baseline_artifact": base_artifact,
         "diagnostic_holdout_metrics": diagnostic,
         "notes": [
-            "Datos crudos, ajuste de preprocesador solo con train, tuning y calibración separados",
+            "Datos crudos; tuning temporal sobre historia anterior y ajuste final con 70% del lote causal",
+            "30% final del lote causal se reserva para calibrar, nunca para ajustar el candidato",
             "La ventana k se predice antes de entrenar; k+1 sirve para comparar/promover",
             "Un candidato aprobado se usa por primera vez en k+2",
             "No se ejecuta actualización si no quedan dos ventanas para promoción y prueba",
