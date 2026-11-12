@@ -21,6 +21,16 @@ X_lote1.assign(Class=y_lote1).to_csv("data/prod_lote3_post_retrain.csv", index=F
 ```
 Por tanto, **lote 3 es una copia del lote 1**, NO un lote cronológicamente posterior ni una validación independiente. Además, el baseline funcional se preparó mediante particiones aleatorias estratificadas. El CatBoost del workflow histórico no puede recibir un test «posterior estricto» sin comprobar primero qué datos estuvieron disponibles en su entrenamiento/selección. Para la evidencia nueva de B se debe reconstruir un protocolo con corte temporal anterior al reentrenamiento y reservar datos futuros inaccesibles durante entrenamiento, ajuste del umbral, selección y promoción. Conservar F1=0.9619 solo como evidencia funcional sobre lote reutilizado.
 
+## 2A. Telemetría REAL recuperada de GitHub Actions (Estudio B, 02/10/2026)
+
+Run: [36989119260](https://github.com/iarajjjrl/Version2-ML-Tesis/actions/runs/36989119260). Datos consultados de la API de GitHub:
+
+- Workflow creado 09:19:31 UTC, actualizado al concluir a las 09:24:48 UTC: **317 s** de duración de la ejecución registrada.
+- Job `ephemeral_retraining` de 09:19:35 a 09:24:47 UTC: **312 s**.
+- Paso `Instalar Dependencias`: 09:19:40–09:20:18 UTC: **38 s**.
+- Paso `Ejecutar Autoajuste Bayesiano y Guardrails (Optuna)`: 09:20:18–09:24:39 UTC: **261 s**.
+- Estos tiempos pertenecen solo a GitHub Actions. **No** miden alerta del watcher → modelo activo en Docker, CPU/RAM completos, consumo de otras políticas ni facturación real. No se deduce ahorro cloud a partir de este único run.
+
 ## 3. Comandos Windows/PowerShell para el usuario (NO ejecutar hasta comprobar entorno)
 
 Desde la raíz del repositorio:
