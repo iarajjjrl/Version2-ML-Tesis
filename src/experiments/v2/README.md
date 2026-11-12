@@ -1,43 +1,29 @@
-# Study A v2 — implementación parcial (sin benchmark)
+# Estudio A v2 — integración probada con datos sintéticos (12/11/2026)
 
-**Fecha:** 2026-11-09. **Rama:** `experiment/study-a-v2-protocol-20261109`. **v1 no modificada.**
+**Rama:** `experiment/study-a-v2-integracion-20261112`. **No modificar main ni v1.**
 
-Este directorio incorpora los primeros componentes del protocolo revisado. **No es todavía un benchmark v2 integrado** y no debe utilizarse para sustituir las cifras exploratorias originales. El script v1 `src/experiments/run_study.py` permanece sin cambios y **sigue ejecutando v1**, no v2.
+## Estado real
 
-## Archivos
+- `raw_windows.py`: crea datos crudos y cronológicos sin preprocesamiento anticipado.
+- `temporal.py`: separa historia previa 70/15/15 para selección de hiperparámetros y ajuste inicial del preprocesador.
+- `controller.py`: política estática, periódica y por eventos; solicita en k, revisa/promueve en k+1, usa el modelo nuevo desde k+2.
+- `trainer.py`: Optuna compara **las cinco familias** (XGBoost, LightGBM, CatBoost, RandomForest, HistGradientBoosting). Usa solamente `tune` de historia previa para elegir parámetros; al actualizar, ajusta el modelo y el preprocesador finales con historia + el **70% inicial del lote causal k**, y calibra el umbral con el **30% final no utilizado para fit**. Para el baseline inicial usa `calibrate` del split 70/15/15.
+- `run_comparison_v2.py`: ejecuta las tres políticas de forma local sobre las mismas ventanas e idéntico baseline; persiste métricas, rechazos, tiempo y artefactos experimentales.
+- `prepare_epochs.py`: genera escenarios natural/sintético a partir de épocas cronológicas disjuntas del dataset original.
+- `run_study_v2.py`: consolida épocas × escenarios × semillas × periodicidades, sin afirmaciones de independencia estadística ni de costo cloud.
 
-- `raw_windows.py`: crea archivos crudos, con `TransactionDT` y `TransactionID` conservados. No ajusta ningún preprocesador y rechaza sobrescribir una carpeta de salida no vacía.
-- `temporal.py`: crea bloques cronológicos 70/15/15 (fit/tune/calibration) y solo aplica `fit` del preprocesador al bloque inicial. Necesita columnas crudas, no los CSV transformados de v1.
-- `controller.py`: controla eventos, periodicidades, cooldown, presupuesto de intentos y la secuencia temporal: solicitud en k, evaluación del candidato en k+1 y uso del modelo promocionado desde k+2. Tras promocionar un nuevo modelo, descarta el historial de F1 bajo del modelo anterior.
-- `tests/test_study_a_v2.py`: pruebas unitarias con datos sintéticos pequeños; no entrenan modelos ni necesitan IEEE-CIS.
+**CI:** 20 pruebas unitarias y de integración aprobadas con datos sintéticos. **No hay aún resultados IEEE-CIS v2**; falta ejecutar el benchmark real y verificar la calidad y los costos.
 
-## Pruebas locales
+## Lectura y pasos
 
-Desde la raíz del repositorio, con pandas, numpy, scikit-learn y pytest instalados:
+Ver `docs/FASE_08_ESTADO_Y_COMANDOS.md` para comandos PowerShell, procedimientos de no sobrescritura, explicación del lote 3 del Estudio B y criterios de aceptación.
 
-```bash
-python -m pytest -q tests/test_study_a_v2.py
+```powershell
+.\venv\Scripts\python.exe -m pytest -q tests/test_study_a_v2.py tests/test_study_a_v2_integration.py
+.\venv\Scripts\python.exe -m src.experiments.v2.prepare_epochs --transactions train_transaction.csv --identity train_identity.csv --output data/experiments/raw-v2-epochs --epochs 3 --max-rows 120000 --windows 8
+.\venv\Scripts\python.exe -m src.experiments.v2.run_comparison_v2 --input data/experiments/raw-v2-epochs/epoch_01/natural --output data/experiments/results-v2-integrated-smoke-42 --seed 42 --trials 1 --every 4
 ```
 
-**Verificación de desarrollo:** 16 pruebas superadas en una copia local del código de estos módulos el 2026-11-09; se comprobó que el SHA de los blobs publicados en GitHub coincide con la versión local. **No se ha ejecutado CI en GitHub, ni un entrenamiento completo con el dataset real.**
+Los CSV originales IEEE-CIS se conservan localmente, no se agregan al repositorio. Es preciso comprobar su procedencia y el orden de `TransactionDT` antes de cualquier corrida científica.
 
-## Preparación de datos crudos (solo cuando se necesite)
-
-```bash
-python -m src.experiments.v2.raw_windows \
-  --transactions train_transaction.csv \
-  --identity train_identity.csv \
-  --output data/experiments/raw-v2/natural \
-  --max-rows 120000 --windows 8
-```
-
-Para el escenario sintético, usar **otra carpeta de salida** e indicar `--inject-drift-from 3`. Este comando solo prepara datos; no crea un modelo. Requiere los archivos originales de IEEE-CIS de manera local.
-
-## Bloqueos antes de un nuevo benchmark
-
-1. Falta crear el entrenador v2 que seleccione hiperparámetros exclusivamente con el bloque `tune`, calibre el umbral exclusivamente en `calibrate` y guarde el preprocesador junto con el modelo activo.
-2. Falta conectar el entrenador y el controlador en un nuevo ejecutor `run_comparison_v2.py`, con registros, fallos, control de tamaño de presupuestos, medición de recursos y resultados por ventana.
-3. Faltan simulación de retraso de etiquetas, agendas aleatorias con presupuesto controlado, sensibilidad y validación con suficientes trayectorias.
-4. Falta el Estudio B operacional ampliado, que es independiente de A.
-
-**Ningún script v1 ha sido modificado y no se han reejecutado corridas.** El título del manuscrito permanece intacto.
+**Ninguna prueba sintética sustituye resultados reales, ni el número de semillas implica independencia temporal.** Un cap de intentos no demuestra presupuesto verdaderamente igualado. La demostración funcional del Estudio B sigue siendo un experimento separado.
