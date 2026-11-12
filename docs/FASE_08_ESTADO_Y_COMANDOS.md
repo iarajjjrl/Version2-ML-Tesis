@@ -6,7 +6,7 @@
 
 ## 1. Implementado en esta rama
 
-- `trainer.py`: concurso de cinco familias (XGBoost, LightGBM, CatBoost, RandomForest, HistGradientBoosting); los ensayos de Optuna usan **solo** bloque `tune` y umbral fijo 0.50. El umbral final se selecciona **solo** con `calibrate`. El preprocesador se ajusta exclusivamente sobre `train` (70/15/15). No refit con tune/calibrate, deliberadamente para evitar su reutilización en ajuste.
+- `trainer.py`: concurso de cinco familias (XGBoost, LightGBM, CatBoost, RandomForest, HistGradientBoosting). La búsqueda Optuna utiliza únicamente historia anterior: ajuste de preprocesador/estimador en `train` (70%), selección en `tune` (15%) a umbral fijo 0.50 y una calibración inicial del baseline con `calibrate` (15%). **En un reentrenamiento**, tras elegir familia y parámetros sin acceder al nuevo lote, el modelo final se ajusta de nuevo con la historia conocida MÁS el 70% cronológico inicial de la ventana causal k; el 30% final de k se reserva EXCLUSIVAMENTE para elegir el umbral del candidato. La evaluación de promoción sigue en k+1 y su primer uso en k+2. Nunca se entrena con el 30% reservado para calibración de k ni con datos futuros.
 - `run_comparison_v2.py`: tres políticas; evaluación `test-then-train`; solicitud k → comparación/promoción k+1 → primer uso k+2. Modelo inicial común. Archivos experimentales nuevos, métricas por ventana, FP/FN, tiempos adicionales, medición CPU/RSS opcional y logs de candidatos. No se hace hot-swap real en A.
 - `prepare_epochs.py`: separa IEEE-CIS cronológicamente en tres épocas de origen disjuntas (opción configurable); genera versiones natural y de cambio sintético de covariables. No presupone que sean muestras bancarias independientes.
 - `run_study_v2.py`: combina épocas, escenarios, semillas y alternativas de periodicidad en ejecución secuencial; reanuda corridas cerradas y consolida resultados descriptivos.
@@ -58,7 +58,7 @@ Para una comparación más profunda, estudiar 15 trials por familia, SIEMPRE igu
 
 1. Pasar los tests existentes y de integración.
 2. Verificar que todos los `TransactionID` de historia/holdout/ventanas sean únicos en cada escenario, y que no exista regresión de `TransactionDT`.
-3. Verificar que el preprocesador solo ajuste el bloque train, que Optuna no observe calibrate y que la promoción use una ventana posterior al ajuste del candidato.
+3. Verificar que Optuna solo observe tune de historia anterior; que el 70% inicial del lote k entre efectivamente al ajuste final, que el 30% final de k quede solo para calibración, y que k+1 permanezca posterior e independiente para promoción.
 4. Confirmar que el modelo promovido solo se usa desde k+2. Registrar eventos y fallos por política/ventana.
 5. Guardar la configuración, versión de código, métricas, consumo y evidencia bruta sin sobrescribir carpetas.
 6. Reportar diferencias de F1 en conjunto con FP, FN, entrenamiento, CPU, RSS, número de intentos y promociones.
