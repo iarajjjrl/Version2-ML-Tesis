@@ -94,3 +94,23 @@ def test_disjoint_epochs_are_chronological_and_do_not_mutate_source(tmp_path):
         for scenario in ("natural", "synthetic"):
             assert (tmp_path / "epochs" / f"epoch_{epoch:02d}" / scenario / "manifest.json").exists()
     pd.testing.assert_frame_equal(source, before)
+
+
+def test_causal_window_contributes_to_final_fit_not_to_calibration(tmp_path):
+    _, base, manifest = make_inputs(tmp_path)
+    source = fake_ieee()
+    baseline, holdout, windows, _ = build_raw_windows(source, max_rows=1000, n_windows=4, seed=42)
+    history = pd.concat([baseline, holdout], ignore_index=True)
+    current = windows[0].copy()
+    # Una tarjeta nueva se observa solo en la fracción entrenable del lote k.
+    cutoff = int(len(current) * .70)
+    current.iloc[:cutoff, current.columns.get_loc("card1")] = 99999
+    assert 99999 not in set(history.card1)
+    candidate = train_candidate(history, features=manifest["features"],
+                                trials=1, seed=42, adaptation_window=current)
+    assert 99999 in candidate.preprocessor.card1_counts_
+    assert candidate.preprocessor.card1_counts_[99999] == cutoff
+    assert candidate.evaluate(windows[1])["f1"] >= 0
+    with pytest.raises(ValueError, match="solapa"):
+        train_candidate(history, features=manifest["features"], trials=1,
+                        adaptation_window=history.iloc[:100])
