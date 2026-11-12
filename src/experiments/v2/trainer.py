@@ -98,11 +98,14 @@ def _specs(seed, weight):
     ]
 
 
-def train_candidate(raw_history, *, features, trials=3, seed=42):
-    """Entrena cinco competidores sobre historia CONOCIDA; no evalúa futuro.
+def train_candidate(raw_history, *, features, trials=3, seed=42,
+                    adaptation_window=None):
+    """Competencia sobre historia previa; adaptación opcional a una ventana nueva.
 
-    NO reentrena con tune/calibrate tras fijar el umbral; se prefiere aislamiento
-    metodológico a utilizar todos los registros, y se reporta esta limitación.
+    Si se aporta adaptation_window, el 70% cronológico inicial del lote se
+    incorpora al ajuste FINAL del clasificador y preprocesador; el 30% final
+    queda exclusivamente para calibrar el umbral. La promoción ocurre sobre
+    la siguiente ventana, FUERA de esta función.
     """
     if trials < 1:
         raise ValueError("trials debe ser positivo")
@@ -138,19 +141,52 @@ def train_candidate(raw_history, *, features, trials=3, seed=42):
                                "trials": trials, "best_params": study.best_params})
         # Orden estable para empates: la primera familia conserva prioridad.
         if winner is None or tune_f1 > winner[2]:
-            winner = (family, best, tune_f1)
+            winner = (family, best, tune_f1, cls, study.best_params, defaults)
 
-    family, best_model, tune_f1 = winner
-    probabilities = best_model.predict_proba(data.calibrate_x)[:, 1]
-    scores = [(float(f1_score(data.calibrate_y,
+    family, best_model, tune_f1, winner_class, winner_params, winner_defaults = winner
+    if adaptation_window is None:
+        # Baseline: calibración interna temporal que no participó en Optuna.
+        final_model = best_model
+        final_preprocessor = data.preprocessor
+        calibration_x = data.calibrate_x
+        calibration_y = data.calibrate_y
+    else:
+        if not isinstance(adaptation_window, pd.DataFrame) or len(adaptation_window) < 10:
+            raise ValueError("Se requiere un lote de adaptación cronológico no vacío")
+        if set(adaptation_window["TransactionID"]) & set(raw_history["TransactionID"]):
+            raise ValueError("La adaptación se solapa con la historia previa")
+        last_old = tuple(raw_history[["TransactionDT", "TransactionID"]].iloc[-1])
+        first_new = tuple(adaptation_window[["TransactionDT", "TransactionID"]].iloc[0])
+        if first_new <= last_old:
+            raise ValueError("El lote de adaptación no es temporalmente posterior")
+        if not pd.MultiIndex.from_frame(adaptation_window[
+                ["TransactionDT", "TransactionID"]]).is_monotonic_increasing:
+            raise ValueError("Lote de adaptación desordenado")
+        split_at = int(len(adaptation_window) * .70)
+        new_train = adaptation_window.iloc[:split_at]
+        new_calibrate = adaptation_window.iloc[split_at:]
+        if set(new_calibrate["Class"].unique()) != {0, 1}:
+            raise ValueError("La calibración de adaptación requiere ambas clases")
+        # Refit final con historia ya conocida + parte inicial del lote k.
+        # Tuning y elección de familia se realizaron antes, solo con historia.
+        final_raw = pd.concat([raw_history, new_train], ignore_index=True)
+        final_preprocessor = FraudFeaturePreprocessor()
+        final_preprocessor.fit(final_raw.loc[:, list(features)].copy())
+        final_x = final_preprocessor.transform(final_raw.loc[:, list(features)].copy())
+        calibration_x = final_preprocessor.transform(
+            new_calibrate.loc[:, list(features)].copy())
+        calibration_y = new_calibrate["Class"].astype(int)
+        final_model = winner_class(**{**winner_params, **winner_defaults})
+        final_model.fit(final_x, final_raw["Class"].astype(int))
+
+    probabilities = final_model.predict_proba(calibration_x)[:, 1]
+    scores = [(float(f1_score(calibration_y,
               (probabilities >= threshold).astype(int), zero_division=0)), threshold)
               for threshold in THRESHOLDS]
-    # Ante empate usar umbral más cercano a 0.50, de forma determinista.
     score, threshold = max(scores, key=lambda v: (v[0], -abs(v[1] - .50), -v[1]))
-    return ModelBundle(family, best_model, data.preprocessor, features,
+    return ModelBundle(family, final_model, final_preprocessor, features,
                        threshold, int(seed), float(tune_f1), float(score),
                        search_results)
-
 
 def save_bundle(bundle, destination):
     """Persiste un candidato experimental SIN activar ni sobrescribir models/."""
