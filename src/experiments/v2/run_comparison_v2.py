@@ -80,7 +80,8 @@ def _pooled(counts):
 
 def run_comparison(raw_dir, out_dir, *, seed=42, trials=3, every=4,
                    f1_trigger=.50, consecutive_low=2, cooldown_windows=1,
-                   min_delta=.01, max_attempts=None, profile=False):
+                   min_delta=.01, max_attempts=None, profile=False,
+                   event_mode="absolute", relative_drop=.15):
     out = Path(out_dir)
     if out.exists() and any(out.iterdir()):
         raise FileExistsError(f"Prohibido sobrescribir evidencia existente: {out}")
@@ -91,15 +92,27 @@ def run_comparison(raw_dir, out_dir, *, seed=42, trials=3, every=4,
     baseline, init_seconds, init_usage = _train(baseline_raw, features, trials, seed,
                                                 profile=profile)
     diagnostic = baseline.evaluate(holdout)
+    if event_mode not in {"absolute", "relative"}:
+        raise ValueError("event_mode debe ser absolute o relative")
+    if event_mode == "relative" and diagnostic["f1"] <= 0:
+        raise ValueError("F1 de referencia inicial nulo: se requiere otro protocolo")
+    if not 0 < relative_drop < 1:
+        raise ValueError("relative_drop debe pertenecer a (0, 1)")
     out.mkdir(parents=True, exist_ok=True)
     models_dir = out / "candidate_artifacts"
     base_artifact = save_bundle(baseline, models_dir / "baseline.pkl")
     rows, summaries, candidates = [], [], []
     for policy in ("static", "periodic", "event"):
+        policy_label = ("event_relative" if policy == "event"
+                        and event_mode == "relative" else policy)
         settings = PolicySettings(
             policy, n_windows=len(windows), every=every, f1_trigger=f1_trigger,
             consecutive_low=consecutive_low, cooldown_windows=cooldown_windows,
-            min_delta=min_delta, max_attempts=max_attempts)
+            min_delta=min_delta, max_attempts=max_attempts,
+            trigger_mode=(event_mode if policy == "event" else "absolute"),
+            relative_drop=relative_drop,
+            reference_f1=(diagnostic["f1"] if policy == "event"
+                          and event_mode == "relative" else None))
         controller = MaintenanceController(settings, "baseline")
         versions = {"baseline": baseline}
         observed = [baseline_raw, holdout]
@@ -121,13 +134,16 @@ def run_comparison(raw_dir, out_dir, *, seed=42, trials=3, every=4,
                 challenger_metrics = None
                 decision = controller.complete_window(window_index, metrics["f1"])
             row = {
-                "policy": policy, "window": window_index,
+                "policy": policy_label, "window": window_index,
                 "transactions": len(window), "positives": int(window["Class"].sum()),
                 "scoring_model_id": decision.scoring_model,
                 "scoring_family": incumbent.family,
                 "next_model_id": decision.model_for_next_window,
                 "trigger": decision.requested, "train_attempt": decision.execute,
-                "reason": decision.reason, "candidate_reviewed": decision.candidate_reviewed,
+                "reason": decision.reason,
+                "reference_f1": decision.reference_f1,
+                "trigger_threshold": decision.trigger_threshold,
+                "candidate_reviewed": decision.candidate_reviewed,
                 "candidate_approved": decision.candidate_approved,
                 "challenger_f1_on_promotion_window": (
                     challenger_metrics["f1"] if challenger_metrics else None),
@@ -140,7 +156,7 @@ def run_comparison(raw_dir, out_dir, *, seed=42, trials=3, every=4,
             # Solo datos observados hasta k. k+1 NO entra en este candidato.
             if decision.execute:
                 attempt_history = pd.concat(observed, ignore_index=True)
-                candidate_id = f"{policy}_candidate_after_{window_index:02d}"
+                candidate_id = f"{policy_label}_candidate_after_{window_index:02d}"
                 try:
                     challenger, elapsed, usage = _train(attempt_history, features,
                                                         trials, seed, profile=profile,
@@ -148,7 +164,7 @@ def run_comparison(raw_dir, out_dir, *, seed=42, trials=3, every=4,
                     versions[candidate_id] = challenger
                     controller.register_candidate(window_index, candidate_id)
                     saved = save_bundle(challenger, models_dir / (candidate_id + ".pkl"))
-                    candidates.append({"policy": policy, "trained_after": window_index,
+                    candidates.append({"policy": policy_label, "trained_after": window_index,
                                        "candidate_id": candidate_id, **saved,
                                        "search_results": challenger.search_results})
                     row["training_seconds"] = float(elapsed)
@@ -164,7 +180,7 @@ def run_comparison(raw_dir, out_dir, *, seed=42, trials=3, every=4,
             rows.append(row)
         totals = _pooled(policy_rows)
         summaries.append({
-            "policy": policy, "seed": seed, "n_windows": len(windows),
+            "policy": policy_label, "seed": seed, "n_windows": len(windows),
             "f1_mean_window": float(np.mean([r["f1"] for r in policy_rows])),
             "recall_mean_window": float(np.mean([r["recall"] for r in policy_rows])),
             "attempts": controller.attempts, "promotions": controller.promotions,
@@ -184,6 +200,12 @@ def run_comparison(raw_dir, out_dir, *, seed=42, trials=3, every=4,
         "source": str(raw_dir), "source_manifest": manifest,
         "seed": seed, "trials_per_family": trials, "families": 5,
         "every": every, "f1_trigger": f1_trigger,
+        "event_mode": event_mode,
+        "relative_drop": relative_drop,
+        "event_reference_source": ("initial_diagnostic_holdout_then_first_k_plus_2_window"
+                                   if event_mode == "relative" else None),
+        "initial_event_reference_f1": (diagnostic["f1"] if event_mode == "relative"
+                                       else None),
         "consecutive_low": consecutive_low, "cooldown_windows": cooldown_windows,
         "min_delta": min_delta, "max_attempts": max_attempts,
         "monitoring_labels": "assumed_available_at_window_end",
@@ -200,7 +222,8 @@ def run_comparison(raw_dir, out_dir, *, seed=42, trials=3, every=4,
             "Un candidato aprobado se usa por primera vez en k+2",
             "No se ejecuta actualización si no quedan dos ventanas para promoción y prueba",
             "Resultados locales: no representan cloud billing, ni validación externa",
-            "Las semillas Optuna no crean trayectorias temporales independientes"
+            "Las semillas Optuna no crean trayectorias temporales independientes",
+            "Un F1 de referencia obtenido en una ventana con pocos fraudes puede ser inestable"
         ],
     }
     (out / "configuration.json").write_text(
@@ -216,6 +239,9 @@ def main():
     p.add_argument("--trials", type=int, default=3)
     p.add_argument("--every", type=int, default=4)
     p.add_argument("--f1-trigger", type=float, default=.50)
+    p.add_argument("--event-mode", choices=("absolute", "relative"), default="absolute")
+    p.add_argument("--relative-drop", type=float, default=.15,
+                   help="Caída relativa requerida: 0.15 = 15%% del F1 de referencia")
     p.add_argument("--consecutive-low", type=int, default=2)
     p.add_argument("--cooldown-windows", type=int, default=1)
     p.add_argument("--min-delta", type=float, default=.01)
@@ -229,7 +255,9 @@ def main():
                             cooldown_windows=args.cooldown_windows,
                             min_delta=args.min_delta,
                             max_attempts=args.max_attempts,
-                            profile=args.profile_resources)
+                            profile=args.profile_resources,
+                            event_mode=args.event_mode,
+                            relative_drop=args.relative_drop)
     print(result.to_string(index=False))
 
 
