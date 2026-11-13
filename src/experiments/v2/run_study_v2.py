@@ -4,6 +4,7 @@ NO ejecuta pruebas de significación; no confunde semillas con datos independien
 NO abre ni modifica GitHub Actions, Docker, models/ o resultados v1.
 """
 import argparse
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -13,7 +14,8 @@ from src.experiments.v2.run_comparison_v2 import run_comparison
 
 def run_study(epochs_dir, output, *, seeds=(42, 43, 44), every_values=(4,),
               trials=3, f1_trigger=.50, consecutive_low=2,
-              cooldown_windows=1, max_attempts=None, profile=False):
+              cooldown_windows=1, max_attempts=None, profile=False,
+              event_mode="absolute", relative_drop=.15):
     epochs_root = Path(epochs_dir)
     target = Path(output)
     if target.exists() and (target / "study_aggregate.csv").exists():
@@ -30,6 +32,25 @@ def run_study(epochs_dir, output, *, seeds=(42, 43, 44), every_values=(4,),
                                   f"seed_{seed}" / f"periodic_every_{every}")
                     summary = output_run / "summary.csv"
                     if summary.exists() and (output_run / "configuration.json").exists():
+                        previous = json.loads((output_run / "configuration.json").read_text(
+                            encoding="utf-8"))
+                        expected = {"seed": seed, "trials_per_family": trials,
+                                    "every": every, "f1_trigger": f1_trigger,
+                                    "consecutive_low": consecutive_low,
+                                    "cooldown_windows": cooldown_windows,
+                                    "max_attempts": max_attempts,
+                                    "event_mode": event_mode,
+                                    "relative_drop": relative_drop}
+                        for key, value in expected.items():
+                            # Ejecuciones anteriores no incluyen event_mode,
+                            # equivalente a absolute. Nunca reutilizar corridas
+                            # antiguas para simular un disparador relativo.
+                            old = previous.get(key, "absolute" if key == "event_mode" else (
+                                .15 if key == "relative_drop" else None))
+                            if old != value:
+                                raise ValueError(
+                                    f"Corrida existente tiene {key}={old!r} "
+                                    f"y nueva configuración pide {value!r}: {output_run}")
                         result = pd.read_csv(summary)
                     elif output_run.exists() and any(output_run.iterdir()):
                         raise RuntimeError(f"Corrida parcial que requiere auditoría: {output_run}")
@@ -39,7 +60,8 @@ def run_study(epochs_dir, output, *, seeds=(42, 43, 44), every_values=(4,),
                             every=every, f1_trigger=f1_trigger,
                             consecutive_low=consecutive_low,
                             cooldown_windows=cooldown_windows,
-                            max_attempts=max_attempts, profile=profile)
+                            max_attempts=max_attempts, profile=profile,
+                            event_mode=event_mode, relative_drop=relative_drop)
                     for record in result.to_dict(orient="records"):
                         rows.append({"epoch": epoch.name, "scenario": scenario,
                                      "seed": seed, "periodic_every": every,
@@ -67,6 +89,8 @@ def main():
     p.add_argument("--every", nargs="+", type=int, default=[4])
     p.add_argument("--trials", type=int, default=3)
     p.add_argument("--f1-trigger", type=float, default=.50)
+    p.add_argument("--event-mode", choices=("absolute", "relative"), default="absolute")
+    p.add_argument("--relative-drop", type=float, default=.15)
     p.add_argument("--consecutive-low", type=int, default=2)
     p.add_argument("--cooldown-windows", type=int, default=1)
     p.add_argument("--max-attempts", type=int, default=None)
@@ -77,7 +101,8 @@ def main():
         every_values=args.every, trials=args.trials,
         f1_trigger=args.f1_trigger, consecutive_low=args.consecutive_low,
         cooldown_windows=args.cooldown_windows,
-        max_attempts=args.max_attempts, profile=args.profile_resources)
+        max_attempts=args.max_attempts, profile=args.profile_resources,
+        event_mode=args.event_mode, relative_drop=args.relative_drop)
     print(f"[OK] {len(results)} resultados de política; "
           "descriptivos, no evidencia de significancia poblacional")
     print(aggregate.to_string(index=False))
