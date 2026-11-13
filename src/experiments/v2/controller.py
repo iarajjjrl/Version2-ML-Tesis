@@ -19,6 +19,11 @@ class PolicySettings:
     min_delta: float = .01
     min_promotion_f1: float = 0.
     max_attempts: int | None = None
+    # 'absolute' conserva el protocolo original (F1 < f1_trigger).
+    # 'relative' exige un F1 inicial de holdout NO usado para selección.
+    trigger_mode: str = "absolute"
+    relative_drop: float = .15
+    reference_f1: float | None = None
 
     def __post_init__(self):
         if self.policy not in {"static", "periodic", "event"}:
@@ -31,6 +36,16 @@ class PolicySettings:
             raise ValueError("Umbral fuera de [0,1]")
         if self.max_attempts is not None and self.max_attempts < 0:
             raise ValueError("max_attempts no puede ser negativo")
+        if self.trigger_mode not in {"absolute", "relative"}:
+            raise ValueError("Modo de disparo no soportado")
+        if not 0 < self.relative_drop < 1:
+            raise ValueError("relative_drop debe encontrarse estrictamente entre 0 y 1")
+        if self.reference_f1 is not None and not (
+                math.isfinite(self.reference_f1) and 0 < self.reference_f1 <= 1):
+            raise ValueError("F1 de referencia debe estar en (0, 1]")
+        if (self.policy == "event" and self.trigger_mode == "relative"
+                and self.reference_f1 is None):
+            raise ValueError("El disparador relativo requiere F1 de referencia inicial")
 
 
 @dataclass(frozen=True)
@@ -45,6 +60,8 @@ class WindowDecision:
     candidate_approved: bool | None
     attempts: int
     promotions: int
+    reference_f1: float | None = None
+    trigger_threshold: float | None = None
 
 
 class MaintenanceController:
@@ -69,6 +86,10 @@ class MaintenanceController:
         self.promotions = 0
         self.pending = None  # (created_window, model_id)
         self.awaiting_registration = None
+        self.reference_f1 = settings.reference_f1
+        # Una referencia de modelo NUEVO solo puede construirse cuando este
+        # recibe su primera ventana k+2 sin haberla usado para promoción.
+        self.reference_pending = False
 
     def complete_window(self, window: int, observed_f1: float,
                         candidate_f1: float | None = None,
@@ -101,6 +122,8 @@ class MaintenanceController:
             if approved:
                 self.active_model = candidate_id
                 self.promotions += 1
+                if s.policy == "event" and s.trigger_mode == "relative":
+                    self.reference_pending = True
             self.pending = None
         elif candidate_f1 is not None or incumbent_f1 is not None:
             raise ValueError("Métricas de promoción sin candidato pendiente")
@@ -111,12 +134,25 @@ class MaintenanceController:
             due = window % s.every == 0
             reason = "periodic_due" if due else "periodic_not_due"
         elif reviewed and approved:
-            # El F1 de esta ventana corresponde al incumbente, no al candidato
-            # recién promovido. No acumularlo como deterioro del modelo nuevo.
+            # El F1 de k+1 pertenece al incumbente; nunca fija la referencia nueva.
             self.low_streak = 0
             due, reason = False, "new_model_not_evaluated_until_next_window"
+        elif s.trigger_mode == "relative" and self.reference_pending:
+            # Primera puntuación real del nuevo modelo (k+2), no usada para
+            # entrenamiento, ajuste de umbral ni selección del challenger.
+            self.reference_f1 = observed_f1 if observed_f1 > 0 else None
+            self.reference_pending = False
+            self.low_streak = 0
+            due, reason = False, "reference_established_from_first_scoring_window"
+        elif s.trigger_mode == "relative" and self.reference_f1 is None:
+            # Si la primera ventana independiente da F1=0, no hay escala
+            # relativa positiva. Registrar la limitación, sin inventar umbral.
+            self.low_streak = 0
+            due, reason = False, "reference_unavailable_zero_f1"
         else:
-            self.low_streak = self.low_streak + 1 if observed_f1 < s.f1_trigger else 0
+            threshold = (s.f1_trigger if s.trigger_mode == "absolute" else
+                         self.reference_f1 * (1. - s.relative_drop))
+            self.low_streak = self.low_streak + 1 if observed_f1 < threshold else 0
             due = self.low_streak >= s.consecutive_low
             reason = ("event_due" if due else
                       "waiting_for_persistent_degradation" if self.low_streak else "event_healthy")
@@ -139,9 +175,16 @@ class MaintenanceController:
                 self.low_streak = 0
 
         self.last_window = window
+        active_threshold = None
+        if s.policy == "event":
+            if s.trigger_mode == "absolute":
+                active_threshold = s.f1_trigger
+            elif self.reference_f1 is not None:
+                active_threshold = self.reference_f1 * (1. - s.relative_drop)
         return WindowDecision(window, scoring_model, self.active_model,
                               due, execute, reason, reviewed, approved,
-                              self.attempts, self.promotions)
+                              self.attempts, self.promotions, self.reference_f1,
+                              active_threshold)
 
     def register_candidate(self, window: int, candidate_model_id: str) -> None:
         if self.awaiting_registration != window or self.pending is not None:
