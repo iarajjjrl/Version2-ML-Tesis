@@ -48,6 +48,9 @@ jobs:
           pip install pandas numpy scikit-learn optuna xgboost lightgbm catboost joblib
       - name: Probar adaptador con lotes sintéticos
         run: python -m unittest discover -s tests -p 'test_controlled_adapter_v2.py' -v
+      - name: Probar entrenamiento real de cinco familias sobre datos artificiales
+        timeout-minutes: 12
+        run: python -m unittest discover -s tests -p 'test_controlled_real_training.py' -v
 
 # El adapter_smoke sustituye el entrenamiento por un modelo ficticio.
 # No demuestra todavía calidad predictiva ni despliegue en nube.
