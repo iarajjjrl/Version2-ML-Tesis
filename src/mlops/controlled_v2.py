@@ -79,6 +79,11 @@ def bootstrap(raw_dir, store, *, seed=42, trials=3, f1_trigger=.50,
         "seed": seed,
         "trials_per_family": trials,
         "features": features,
+        "inputs_sha256": {
+            fname: sha256_file(raw / fname)
+            for fname in (["baseline_train_raw.csv", "diagnostic_holdout_raw.csv"] +
+                          [entry["file"] for entry in manifest["windows"]])
+        },
         "artifacts": {"baseline": bundle},
         "initial_training_seconds": round(duration, 4),
         "diagnostic_holdout": diagnostic,
@@ -118,6 +123,8 @@ def step(store, batch_file=None):
         if entry["window"] != window:
             raise ValueError("El manifiesto contiene ventanas fuera de orden")
         batch_path = raw / entry["file"]
+        if sha256_file(batch_path) != meta["inputs_sha256"][entry["file"]]:
+            raise ValueError("La ventana preparada cambió desde la inicialización")
         if batch_file is not None:
             supplied = Path(batch_file).resolve()
             if sha256_file(supplied) != sha256_file(batch_path):
@@ -147,6 +154,9 @@ def step(store, batch_file=None):
         def train_callback(index):
             previous_files = ["baseline_train_raw.csv", "diagnostic_holdout_raw.csv"]
             previous_files.extend(item["file"] for item in manifest["windows"][:index - 1])
+            for name in previous_files:
+                if sha256_file(raw / name) != meta["inputs_sha256"][name]:
+                    raise ValueError(f"Los datos históricos fueron modificados: {name}")
             history = pd.concat([pd.read_csv(raw / name) for name in previous_files],
                                 ignore_index=True)
             t0, cpu0 = time.perf_counter(), time.process_time()
