@@ -40,10 +40,21 @@ Preparar las ventanas con la misma herramienta del Estudio A:
 python -m src.experiments.v2.raw_windows --transactions train_transaction.csv --identity train_identity.csv --output data/experiments/raw-v2/prototipo --max-rows 120000 --windows 8
 ```
 
+Si conservas los resultados originales del Estudio A, puedes reutilizar
+literalmente su modelo inicial M0. Esto aumenta la trazabilidad, aunque no
+hace equivalentes los tiempos locales y los del prototipo. Se comprueba que
+el manifiesto de datos, la semilla y los ensayos de búsqueda sean los mismos.
+La carpeta de resultados de A debe contener `configuration.json` y
+`candidate_artifacts/baseline.pkl`. Si no conservas ese archivo, la opción
+normal es entrenar un nuevo M0 con el mismo protocolo.
+
 Crear estado M0 separado:
 
 ```powershell
 python -m src.mlops.controlled_v2 bootstrap --raw-dir data/experiments/raw-v2/prototipo --store data/experiments/controlado-v2 --trials 3
+
+# Alternativa con el M0 original de A, si existe en tu equipo:
+# python -m src.mlops.controlled_v2 bootstrap --raw-dir data/experiments/raw-v2/prototipo --store data/experiments/controlado-v2 --trials 3 --study-a-run data/experiments/study-a/epoch_01/natural/seed_42/periodic_every_4
 ```
 
 Procesar las ventanas una por una y comprobar estado entre cada ejecución:
