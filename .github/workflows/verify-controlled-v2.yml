@@ -1,0 +1,31 @@
+name: Verificar integración controlador MLOps v2
+
+on:
+  push:
+    branches:
+      - experiment/integracion-controlador-mlops-20261113
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  policy_contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar rama del experimento
+        uses: actions/checkout@v4
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Comprobar sintaxis
+        run: |
+          python -m py_compile src/experiments/v2/controller.py
+          python -m py_compile src/mlops/controller_bridge.py
+          python -m py_compile src/mlops/controlled_v2.py
+      - name: Contrato temporal con controlador compartido
+        run: python -m unittest discover -s tests -p 'test_controlled_policy_bridge.py' -v
+
+# IMPORTANTE: este workflow NO entrena, publica ni cambia models/ o main.
+# Los lotes IEEE-CIS estan fuera de GitHub y deben probarse por separado.
