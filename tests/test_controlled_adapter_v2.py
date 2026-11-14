@@ -20,6 +20,7 @@ class FakeBundle:
     family = "RandomForest"
     def __init__(self, candidate=False):
         self.candidate = candidate
+        self.features = ("TransactionAmt", "card1", "C13")
         self.threshold = .50
         self.seed = 42
         self.tuning_f1 = .60
