@@ -1,0 +1,8 @@
+# Prototipo de mantenimiento por eventos usando controlador compartido v2.
+# No ejecuta el watcher historico ni publica modelos en GitHub.
+FROM python:3.13-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY src/ ./src/
+ENTRYPOINT ["python", "-m", "src.mlops.controlled_v2"]
