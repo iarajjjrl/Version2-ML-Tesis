@@ -56,11 +56,11 @@ class ControlledIngestHandler:
             print(f"[CONTROL] Archivo todavía en escritura: {name}", flush=True)
             return
         try:
-            outcome = step(self.store, batch_file=file)
             self.processed.mkdir(parents=True, exist_ok=True)
             target = self.processed / file.name
             if target.exists():
                 raise FileExistsError(f"El archivo procesado ya existe: {target}")
+            outcome = step(self.store, batch_file=file)
             shutil.move(str(file), str(target))
             print(f"[CONTROL] Ventana {outcome['window']}, F1 {outcome['observed_f1']:.4f}, "
                   f"entrenar={outcome['train_attempt']}, "
