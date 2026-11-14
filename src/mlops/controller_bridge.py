@@ -57,7 +57,7 @@ def controller_from_dict(settings, state):
             raise ValueError(f"Falta campo de controlador: {name}")
         value = state[name]
         if name == "pending" and value is not None:
-            if not isinstance(value, list) or len(value) != 2:
+            if not isinstance(value, (list, tuple)) or len(value) != 2:
                 raise ValueError("Candidato pendiente inválido")
             value = tuple(value)
         setattr(ctrl, name, value)
