@@ -24,6 +24,7 @@ jobs:
           python -m py_compile src/experiments/v2/controller.py
           python -m py_compile src/mlops/controller_bridge.py
           python -m py_compile src/mlops/controlled_v2.py
+          python -m py_compile src/mlops/watch_controlled_v2.py
       - name: Contrato temporal con controlador compartido
         run: python -m unittest discover -s tests -p 'test_controlled_policy_bridge.py' -v
 
