@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import pandas as pd
+import joblib
 
 from src.mlops.controlled_v2 import bootstrap, step
 from src.mlops.controller_bridge import load_state
@@ -94,6 +95,22 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual(ctrl.promotions, 1)
             self.assertEqual(len(data["processed"]), 4)
             self.assertEqual(data["processed"][2]["candidate_f1"], .75)
+
+    def test_reuse_the_exact_initial_model_from_a(self):
+        source = Path(self.root.name) / "study_a_run"
+        bundle_dir = source / "candidate_artifacts"
+        bundle_dir.mkdir(parents=True)
+        joblib.dump(FakeBundle(), bundle_dir / "baseline.pkl")
+        manifest = json.loads((self.raw / "manifest.json").read_text(encoding="utf-8"))
+        (source / "configuration.json").write_text(json.dumps({
+            "source_manifest": manifest, "seed": 42, "trials_per_family": 1,
+        }), encoding="utf-8")
+        with patch("src.mlops.controlled_v2.train_candidate") as trainer:
+            bootstrap(self.raw, self.store, seed=42, trials=1, study_a_run=source)
+            trainer.assert_not_called()
+        data, controller = load_state(self.store / "state.json")
+        self.assertEqual(data["metadata"]["initial_source"], "reused_study_a_m0")
+        self.assertEqual(controller.active_model, "baseline")
 
     def test_changed_manifest_is_rejected(self):
         with patch("src.mlops.controlled_v2.train_candidate",
