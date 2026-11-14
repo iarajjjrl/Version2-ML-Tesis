@@ -54,3 +54,16 @@ jobs:
 
 # El adapter_smoke sustituye el entrenamiento por un modelo ficticio.
 # No demuestra todavía calidad predictiva ni despliegue en nube.
+
+  docker_contract:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar rama del experimento
+        uses: actions/checkout@v4
+      - name: Construir contenedor aislado
+        timeout-minutes: 12
+        run: docker build -f dockerfile.controlled_v2 -t tesis-controlado-v2:test .
+      - name: Comprobar punto de entrada del prototipo
+        run: docker run --rm tesis-controlado-v2:test --help
+
+# La prueba de Docker no descarga IEEE-CIS ni publica un modelo.
