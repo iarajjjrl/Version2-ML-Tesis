@@ -96,7 +96,7 @@ def bootstrap(raw_dir, store, *, seed=42, trials=3, f1_trigger=.50,
     }
 
 
-def step(store):
+def step(store, batch_file=None):
     """Consume la SIGUIENTE ventana del manifiesto en orden cronológico.
 
     k usa el modelo vigente; si dispara, entrena candidato con historia previa
@@ -118,6 +118,11 @@ def step(store):
         if entry["window"] != window:
             raise ValueError("El manifiesto contiene ventanas fuera de orden")
         batch_path = raw / entry["file"]
+        if batch_file is not None:
+            supplied = Path(batch_file).resolve()
+            if sha256_file(supplied) != sha256_file(batch_path):
+                raise ValueError("El lote recibido no coincide con la ventana esperada")
+            batch_path = supplied
         batch = pd.read_csv(batch_path)
         if len(batch) != entry["records"] or len(batch) < 2:
             raise ValueError("Tamaño de ventana distinto del manifiesto")
@@ -195,6 +200,8 @@ def main():
     boot.add_argument("--min-delta", type=float, default=.01)
     run = commands.add_parser("step", help="Procesar la siguiente ventana del escenario")
     run.add_argument("--store", required=True)
+    run.add_argument("--batch", default=None,
+                     help="CSV recibido, debe coincidir con la siguiente ventana preparada")
     status = commands.add_parser("status", help="Mostrar resumen del estado persistido")
     status.add_argument("--store", required=True)
     args = parser.parse_args()
@@ -205,7 +212,7 @@ def main():
                            cooldown_windows=args.cooldown_windows,
                            min_delta=args.min_delta)
     elif args.command == "step":
-        result = step(args.store)
+        result = step(args.store, batch_file=args.batch)
     else:
         data, ctrl = load_state(Path(args.store) / "state.json")
         result = {"last_window": ctrl.last_window, "active_model": ctrl.active_model,
