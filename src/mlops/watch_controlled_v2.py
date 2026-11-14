@@ -9,9 +9,6 @@ from pathlib import Path
 import shutil
 import time
 
-from watchdog.events import FileSystemEventHandler
-from watchdog.observers.polling import PollingObserver
-
 from src.mlops.controlled_v2 import step
 from src.mlops.controller_bridge import load_state
 
@@ -25,7 +22,7 @@ def expected_name(store):
     return manifest["windows"][controller.last_window]["file"]
 
 
-class ControlledIngestHandler(FileSystemEventHandler):
+class ControlledIngestHandler:
     def __init__(self, store, incoming, processed):
         self.store = Path(store)
         self.incoming = Path(incoming)
@@ -72,15 +69,6 @@ class ControlledIngestHandler(FileSystemEventHandler):
             # Conservar el lote, no omitir una ventana por un error.
             print(f"[CONTROL][ERROR] {type(exc).__name__}: {exc}", flush=True)
 
-    def on_created(self, event):
-        if not event.is_directory:
-            self.process(event.src_path)
-
-    def on_moved(self, event):
-        if not event.is_directory:
-            self.process(event.dest_path)
-
-
 def main():
     p = argparse.ArgumentParser(description="Ingesta v2 sin publicar modelos")
     p.add_argument("--store", required=True)
@@ -90,9 +78,6 @@ def main():
     ingest = Path(args.incoming).resolve()
     ingest.mkdir(parents=True, exist_ok=True)
     handler = ControlledIngestHandler(args.store, ingest, args.processed)
-    observer = PollingObserver()
-    observer.schedule(handler, str(ingest), recursive=False)
-    observer.start()
     print(f"[CONTROL] Vigilando {ingest}, ventana esperada: {expected_name(args.store)}",
           flush=True)
     try:
@@ -103,9 +88,6 @@ def main():
             time.sleep(2)
     except KeyboardInterrupt:
         pass
-    finally:
-        observer.stop()
-        observer.join()
 
 
 if __name__ == "__main__":
