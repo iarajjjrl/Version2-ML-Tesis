@@ -53,7 +53,8 @@ def _load_bundle(store, state, model_id):
 
 
 def bootstrap(raw_dir, store, *, seed=42, trials=3, f1_trigger=.50,
-              consecutive_low=2, cooldown_windows=1, min_delta=.01):
+              consecutive_low=2, cooldown_windows=1, min_delta=.01,
+              study_a_run=None):
     """Entrena M0 una sola vez con historia inicial; no activa candidatos."""
     raw = Path(raw_dir).resolve()
     destination = Path(store).resolve()
@@ -66,9 +67,24 @@ def bootstrap(raw_dir, store, *, seed=42, trials=3, f1_trigger=.50,
         policy="event", n_windows=len(windows), f1_trigger=f1_trigger,
         consecutive_low=consecutive_low, cooldown_windows=cooldown_windows,
         min_delta=min_delta, trigger_mode="absolute")
-    start = time.perf_counter()
-    model = train_candidate(baseline, features=features, trials=trials, seed=seed)
-    duration = time.perf_counter() - start
+    if study_a_run is not None:
+        # Si se dispone de los artefactos originales de A, usar literalmente M0.
+        origin = Path(study_a_run).resolve()
+        cfg = json.loads((origin / "configuration.json").read_text(encoding="utf-8"))
+        if (cfg.get("source_manifest") != manifest or cfg.get("seed") != seed
+                or cfg.get("trials_per_family") != trials):
+            raise ValueError("El modelo inicial de A no corresponde al mismo escenario, semilla y búsqueda")
+        source_bundle = origin / "candidate_artifacts" / "baseline.pkl"
+        if not source_bundle.is_file():
+            raise FileNotFoundError("El modelo inicial de A no está presente en el directorio indicado")
+        model = joblib.load(source_bundle)  # Solo de una ejecución propia y confiable.
+        if tuple(model.features) != tuple(features):
+            raise ValueError("Las características de M0 no coinciden con el escenario")
+        duration = 0.0
+    else:
+        start = time.perf_counter()
+        model = train_candidate(baseline, features=features, trials=trials, seed=seed)
+        duration = time.perf_counter() - start
     diagnostic = model.evaluate(holdout)
     destination.mkdir(parents=True, exist_ok=True)
     bundle = save_bundle(model, _artifact_path(destination, "baseline"))
@@ -86,6 +102,8 @@ def bootstrap(raw_dir, store, *, seed=42, trials=3, f1_trigger=.50,
         },
         "artifacts": {"baseline": bundle},
         "initial_training_seconds": round(duration, 4),
+        "initial_source": ("reused_study_a_m0" if study_a_run else "trained_for_prototype"),
+        "study_a_run": (str(Path(study_a_run).resolve()) if study_a_run else None),
         "diagnostic_holdout": diagnostic,
         "mode": "local_isolated_no_cloud_publication",
     }
@@ -208,6 +226,8 @@ def main():
     boot.add_argument("--consecutive-low", type=int, default=2)
     boot.add_argument("--cooldown-windows", type=int, default=1)
     boot.add_argument("--min-delta", type=float, default=.01)
+    boot.add_argument("--study-a-run", default=None,
+                      help="Reutilizar M0 de una ejecución A con idéntica configuración y manifiesto")
     run = commands.add_parser("step", help="Procesar la siguiente ventana del escenario")
     run.add_argument("--store", required=True)
     run.add_argument("--batch", default=None,
@@ -220,7 +240,8 @@ def main():
                            f1_trigger=args.f1_trigger,
                            consecutive_low=args.consecutive_low,
                            cooldown_windows=args.cooldown_windows,
-                           min_delta=args.min_delta)
+                           min_delta=args.min_delta,
+                           study_a_run=args.study_a_run)
     elif args.command == "step":
         result = step(args.store, batch_file=args.batch)
     else:
