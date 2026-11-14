@@ -34,11 +34,23 @@ Estas reglas son decisiones experimentales, no estándares universales de MLOps.
 
 Se requieren `train_transaction.csv` y `train_identity.csv` de IEEE-CIS en la raíz local del proyecto. Los archivos originales no se suben a GitHub.
 
+Para una prueba independiente puedes preparar ventanas nuevas con la misma herramienta
+utilizada en el Estudio A. Los archivos nuevos NO son automáticamente la misma
+época que aparece en las tablas de resultados originales.
+
 Preparar las ventanas con la misma herramienta del Estudio A:
 
 ```powershell
 python -m src.experiments.v2.raw_windows --transactions train_transaction.csv --identity train_identity.csv --output data/experiments/raw-v2/prototipo --max-rows 120000 --windows 8
 ```
+
+Para hacer una comprobación directamente relacionada con el Estudio A,
+lo mejor es utilizar la subcarpeta raw-v2 original de una época y escenario
+específicos, como `epoch_01/natural`. Debe ser exactamente la misma carpeta
+de datos indicada en `source_manifest` por la ejecución A de referencia.
+Si no existen los archivos preparados, se pueden crear las épocas con
+`python -m src.experiments.v2.prepare_epochs`, sin sobrescribir resultados.
+Las ventanas nuevas no reemplazan las mediciones históricas.
 
 Si conservas los resultados originales del Estudio A, puedes reutilizar
 literalmente su modelo inicial M0. Esto aumenta la trazabilidad, aunque no
