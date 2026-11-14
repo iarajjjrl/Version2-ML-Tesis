@@ -29,3 +29,24 @@ jobs:
 
 # IMPORTANTE: este workflow NO entrena, publica ni cambia models/ o main.
 # Los lotes IEEE-CIS estan fuera de GitHub y deben probarse por separado.
+
+  adapter_smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar rama del experimento
+        uses: actions/checkout@v4
+      - name: Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Instalar dependencias para prueba de integración
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy scikit-learn optuna xgboost lightgbm catboost joblib
+      - name: Probar adaptador con lotes sintéticos
+        run: python -m unittest discover -s tests -p 'test_controlled_adapter_v2.py' -v
+
+# El adapter_smoke sustituye el entrenamiento por un modelo ficticio.
+# No demuestra todavía calidad predictiva ni despliegue en nube.
