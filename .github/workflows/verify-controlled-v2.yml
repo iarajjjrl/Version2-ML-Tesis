@@ -65,5 +65,8 @@ jobs:
         run: docker build -f dockerfile.controlled_v2 -t tesis-controlado-v2:test .
       - name: Comprobar punto de entrada del prototipo
         run: docker run --rm tesis-controlado-v2:test --help
+      - name: Ejecutar entrenamiento completo con datos artificiales dentro de Docker
+        timeout-minutes: 12
+        run: docker run --rm -v "${{ github.workspace }}/tests:/app/tests:ro" --entrypoint python tesis-controlado-v2:test -m unittest discover -s tests -p 'test_controlled_real_training.py' -v
 
 # La prueba de Docker no descarga IEEE-CIS ni publica un modelo.
